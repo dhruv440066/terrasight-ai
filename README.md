@@ -1,9 +1,29 @@
 # CLEANPATH AI (TerraSight AI)
 ### AI-Powered Civic Waste Detection & Municipal Dispatch Platform
 
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/dhruv440066/terrasight-ai)
+[![Python 3.11](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-2.0-009688.svg)](https://fastapi.tiangolo.com/)
+[![React 18](https://img.shields.io/badge/React-18-61DAFB.svg)](https://react.dev/)
+[![YOLOv8](https://img.shields.io/badge/YOLOv8-Ultralytics-green.svg)](https://github.com/ultralytics/ultralytics)
+
 > **Tagline:** *Detect. Locate. Cluster. Prioritize. Dispatch.*
 
-CleanPath AI (also referred to as **TerraSight AI**) is a complete, 100% locally runnable civic-tech platform that empowers citizens to report roadside and civic waste using photographs while providing municipal sanitation officers with an AI-driven GIS Command Center to detect, geolocate, deduplicate via 50-meter Haversine DBSCAN clustering, prioritize by mathematical severity, and dispatch sanitation crews.
+---
+
+## ⚡ 1-Click Production Deployment on Render
+
+Deploy TerraSight AI directly to Render with zero manual configuration:
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/dhruv440066/terrasight-ai)
+
+### Or Deploy as a Single Web Service (Dropdown in Render):
+1. Go to [Render Dashboard](https://dashboard.render.com) -> Click **New +** -> **Web Service**.
+2. Select **`dhruv440066/terrasight-ai`** from your repository dropdown.
+3. Configure:
+   - **Build Command**: `./build.sh`
+   - **Start Command**: `cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT`
+4. Click **Deploy**! The backend and React frontend will both be live on a single URL!
 
 ---
 

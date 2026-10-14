@@ -2112,6 +2112,8 @@ def root_index() -> Response:
 @app.get("/citizen/{rest_path:path}", include_in_schema=False)
 @app.get("/officer", include_in_schema=False)
 @app.get("/officer/map", include_in_schema=False)
+@app.get("/officer/{rest_path:path}", include_in_schema=False)
+@app.get("/map", include_in_schema=False)
 def spa_frontend_routes(rest_path: Optional[str] = None) -> Response:
     """Serve React SPA index.html for client-side routes on port 8000."""
     return _serve_spa_or_api_info()
