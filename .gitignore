@@ -1,1 +1,69 @@
-data/batch_*
+# Git Ignore for TerraSight AI / CleanPath AI
+
+# Environment variables & secrets
+.env
+.env.local
+.env.*.local
+*.env
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+backend/cleanpath.db
+
+# Node & Frontend artifacts
+node_modules/
+frontend/node_modules/
+frontend/dist/
+.npm
+.vite/
+
+# Temporary and local runtime uploads
+backend/uploads/waste_*
+backend/uploads/*.tmp
+backend/generated_reports/*.pdf
+backend/generated_reports/*.csv
+backend/runs/
+
+# Large training datasets & local scratch
+data/
+detector/
+demo.ipynb
+backend/taco_yolo_dataset/
+
+# IDE & OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

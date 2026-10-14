@@ -1,0 +1,17 @@
+.git
+.github
+node_modules
+frontend/node_modules
+__pycache__
+*.pyc
+*.pyo
+.env
+.venv
+venv
+env
+*.db
+backend/cleanpath.db
+data/
+detector/
+demo.ipynb
+.DS_Store

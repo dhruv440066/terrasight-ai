@@ -1,0 +1,78 @@
+# ==============================================================================
+# TerraSight AI — Render Production Blueprint Specification
+# ==============================================================================
+# Architecture:
+# 1. PostgreSQL Database: Managed free-tier PostgreSQL instance on Render
+# 2. Backend Web Service: FastAPI + YOLOv8 + DBSCAN + PyTorch (CPU) Web Service
+# 3. Frontend Static Site: React + Vite + Tailwind CSS + Leaflet Static Site
+# ==============================================================================
+
+version: "1"
+
+databases:
+  - name: terrasight-db
+    databaseName: terrasight
+    user: terrasight_user
+    plan: free
+    region: oregon
+
+services:
+  # ----------------------------------------------------------------------------
+  # Backend API Web Service (FastAPI / Uvicorn)
+  # ----------------------------------------------------------------------------
+  - type: web
+    name: terrasight-api
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: "pip install --upgrade pip && pip install -r backend/requirements.txt"
+    startCommand: "cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DATABASE_URL
+        fromDatabase:
+          name: terrasight-db
+          property: connectionString
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: 1440
+      - key: DEMO_MODE
+        value: "false"
+      - key: UPLOAD_DIR
+        value: uploads
+      - key: MODEL_PATH
+        value: models/best.pt
+      - key: CONFIDENCE_THRESHOLD
+        value: "0.20"
+      - key: HOTSPOT_RADIUS_METERS
+        value: "50.0"
+      - key: CORS_ORIGINS
+        value: "*"
+
+  # ----------------------------------------------------------------------------
+  # Frontend Static Site (React / Vite SPA)
+  # ----------------------------------------------------------------------------
+  - type: web
+    name: terrasight-frontend
+    env: static
+    region: oregon
+    buildCommand: "cd frontend && npm install && npm run build"
+    staticPublishPath: ./frontend/dist
+    autoDeploy: true
+    routes:
+      # Single-Page Application (SPA) rewrite rule for client-side routing
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: terrasight-api
+          property: host

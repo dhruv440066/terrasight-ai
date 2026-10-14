@@ -1,0 +1,28 @@
+======================================================================
+  CLEANPATH AI / TERRASIGHT AI — YOLOv8 WASTE DETECTION EVALUATION
+======================================================================
+Evaluated At       : 2026-10-08T05:28:54.342670+00:00
+Primary Weights    : C:\Users\LENOVO\TACO\backend\models\best.pt
+Inference Engine   : YOLOv8
+Images Evaluated   : 5 (11.16s)
+----------------------------------------------------------------------
+OVERALL DETECTION METRICS:
+  Precision        : 100.00%
+  Recall           : 100.00%
+  mAP@50           : 98.00%
+  mAP@50-95        : 76.44%
+  F1 Score         : 100.00%
+----------------------------------------------------------------------
+CLASS-WISE METRICS:
+Category                  Precision     Recall   F1-Score     mAP@50  mAP@50-95
+Plastic Waste               100.00%    100.00%    100.00%     98.00%     76.44%
+Organic Waste               100.00%    100.00%    100.00%     98.00%     76.44%
+Dry Leaves / Biomass        100.00%    100.00%    100.00%     98.00%     76.44%
+----------------------------------------------------------------------
+CONFUSION MATRIX (Rows = Ground Truth, Cols = Predicted):
+Labels: Plastic Waste, Organic Waste, Dry Leaves / Biomass, Background
+[[61  0  0  0]
+ [ 0 14  0  0]
+ [ 0  0 10  0]
+ [ 0  0  0  0]]
+======================================================================

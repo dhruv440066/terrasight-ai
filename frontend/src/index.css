@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+    Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+  background-color: #f8fafc;
+  color: #0f172a;
+}
+
+/* Ensure Leaflet map tiles and markers render properly inside flex/grid layouts */
+.leaflet-container {
+  width: 100%;
+  height: 100%;
+  z-index: 10;
+  font-family: inherit;
+}
+
+.custom-hotspot-marker {
+  background: transparent;
+  border: none;
+}

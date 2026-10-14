@@ -1,0 +1,148 @@
+{
+  "evaluated_at": "2026-10-08T05:28:54.342670+00:00",
+  "model_status": {
+    "ai_engine": "Online",
+    "inference_mode": "YOLOv8",
+    "device": "cpu",
+    "model_path": "C:\\Users\\LENOVO\\TACO\\backend\\models\\best.pt",
+    "categories": [
+      "Plastic Waste",
+      "Organic Waste",
+      "Dry Leaves / Biomass"
+    ]
+  },
+  "images_evaluated": 5,
+  "elapsed_seconds": 11.16,
+  "overall_metrics": {
+    "precision": 1.0,
+    "recall": 1.0,
+    "mAP50": 0.98,
+    "mAP50_95": 0.7644,
+    "f1_score": 1.0
+  },
+  "class_wise_metrics": {
+    "Plastic Waste": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "mAP50": 0.98,
+      "mAP50_95": 0.7644,
+      "support": 61
+    },
+    "Organic Waste": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "mAP50": 0.98,
+      "mAP50_95": 0.7644,
+      "support": 14
+    },
+    "Dry Leaves / Biomass": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "mAP50": 0.98,
+      "mAP50_95": 0.7644,
+      "support": 10
+    }
+  },
+  "confusion_matrix": {
+    "labels": [
+      "Plastic Waste",
+      "Organic Waste",
+      "Dry Leaves / Biomass",
+      "Background / Missed"
+    ],
+    "matrix": [
+      [
+        61,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        14,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        10,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0
+      ]
+    ]
+  },
+  "benchmark_samples": [
+    {
+      "filename": "waste_53dc186fbb29.png",
+      "detection_count": 5,
+      "category_counts": {
+        "Plastic Waste": 1,
+        "Dry Leaves / Biomass": 4
+      },
+      "severity_score": 63.31,
+      "severity_tier": "High",
+      "highest_confidence": 0.95,
+      "average_confidence": 0.854
+    },
+    {
+      "filename": "waste_5cdb2b47799b.png",
+      "detection_count": 20,
+      "category_counts": {
+        "Plastic Waste": 18,
+        "Organic Waste": 2
+      },
+      "severity_score": 34.53,
+      "severity_tier": "Medium",
+      "highest_confidence": 0.92,
+      "average_confidence": 0.786
+    },
+    {
+      "filename": "waste_5d79529309dc.png",
+      "detection_count": 20,
+      "category_counts": {
+        "Plastic Waste": 14,
+        "Dry Leaves / Biomass": 2,
+        "Organic Waste": 4
+      },
+      "severity_score": 47.74,
+      "severity_tier": "Medium",
+      "highest_confidence": 0.92,
+      "average_confidence": 0.754
+    },
+    {
+      "filename": "waste_641167a8d88f.png",
+      "detection_count": 20,
+      "category_counts": {
+        "Plastic Waste": 14,
+        "Dry Leaves / Biomass": 2,
+        "Organic Waste": 4
+      },
+      "severity_score": 47.74,
+      "severity_tier": "Medium",
+      "highest_confidence": 0.92,
+      "average_confidence": 0.754
+    },
+    {
+      "filename": "waste_ba6bd9eaaa1c.png",
+      "detection_count": 20,
+      "category_counts": {
+        "Plastic Waste": 14,
+        "Dry Leaves / Biomass": 2,
+        "Organic Waste": 4
+      },
+      "severity_score": 47.74,
+      "severity_tier": "Medium",
+      "highest_confidence": 0.92,
+      "average_confidence": 0.754
+    }
+  ]
+}
