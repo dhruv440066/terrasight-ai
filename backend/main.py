@@ -2107,15 +2107,29 @@ def root_index() -> Response:
     return _serve_spa_or_api_info()
 
 
-@app.get("/login", include_in_schema=False)
-@app.get("/citizen", include_in_schema=False)
-@app.get("/citizen/{rest_path:path}", include_in_schema=False)
-@app.get("/officer", include_in_schema=False)
-@app.get("/officer/map", include_in_schema=False)
-@app.get("/officer/{rest_path:path}", include_in_schema=False)
-@app.get("/map", include_in_schema=False)
-def spa_frontend_routes(rest_path: Optional[str] = None) -> Response:
-    """Serve React SPA index.html for client-side routes on port 8000."""
+@app.get("/{rest_of_path:path}", include_in_schema=False)
+def catch_all_spa_route(rest_of_path: str) -> Response:
+    """Serve static files or React SPA index.html for any frontend client route."""
+    api_prefixes = (
+        "auth",
+        "incidents",
+        "officer",
+        "demo",
+        "health",
+        "reverse-geocode",
+        "uploads",
+        "docs",
+        "redoc",
+        "openapi.json",
+    )
+    first_segment = rest_of_path.split("/")[0]
+    if first_segment in api_prefixes:
+        raise HTTPException(status_code=404, detail="API endpoint not found")
+
+    candidate = FRONTEND_DIST_DIR / rest_of_path
+    if candidate.is_file():
+        return FileResponse(candidate)
+
     return _serve_spa_or_api_info()
 
 

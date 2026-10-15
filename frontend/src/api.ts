@@ -19,25 +19,165 @@ import type {
   WasteDetection,
 } from './types';
 
-export const API_BASE_URL: string = (() => {
-  const envUrl = (import.meta as any).env?.VITE_API_URL;
-  if (envUrl && typeof envUrl === 'string' && envUrl.trim().length > 0) {
-    return envUrl.trim().replace(/\/+$/, '');
-  }
-  if (typeof window !== 'undefined') {
-    if (window.location.port === '8000') {
-      return window.location.origin;
+export function normalizeApiUrl(rawUrl: string): string {
+  let url = (rawUrl || '').trim().replace(/\/+$/, '');
+  if (!url) return '';
+  if (!/^https?:\/\//i.test(url)) {
+    if (/^(localhost|127\.0\.0\.1)(:\d+)?/i.test(url)) {
+      url = `http://${url}`;
+    } else {
+      url = `https://${url}`;
     }
   }
+  return url;
+}
+
+export function determineApiBaseUrl(): string {
+  // 1. Explicit user override stored in localStorage
+  if (typeof window !== 'undefined') {
+    const saved =
+      localStorage.getItem('terrasight_api_url') ||
+      localStorage.getItem('cleanpath_api_url');
+    if (saved && saved.trim().length > 0) {
+      return normalizeApiUrl(saved);
+    }
+  }
+
+  // 2. Vite build-time environment variable (VITE_API_URL)
+  const envUrl = (import.meta as any).env?.VITE_API_URL;
+  if (
+    envUrl &&
+    typeof envUrl === 'string' &&
+    envUrl.trim().length > 0 &&
+    !envUrl.includes('%VITE_API_URL%')
+  ) {
+    return normalizeApiUrl(envUrl);
+  }
+
+  // 3. Smart browser runtime detection
+  if (typeof window !== 'undefined') {
+    const { hostname, origin, port } = window.location;
+
+    // A. Localhost development environments
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      if (port === '8000') {
+        return origin; // Backend serving frontend directly on port 8000
+      }
+      return 'http://localhost:8000'; // Vite dev server proxying to local backend
+    }
+
+    // B. Render Cloud deployments (*.onrender.com)
+    if (hostname.endsWith('.onrender.com')) {
+      // If hosted directly on the backend web service (e.g. terrasight-api.onrender.com)
+      if (hostname.includes('api') && !hostname.includes('frontend')) {
+        return origin;
+      }
+      // If hosted on a static frontend, derive the backend API URL
+      if (hostname.includes('frontend')) {
+        return `https://${hostname.replace('frontend', 'api')}`;
+      }
+      if (hostname.includes('ui')) {
+        return `https://${hostname.replace('ui', 'api')}`;
+      }
+      // Standard Render blueprint fallback
+      return 'https://terrasight-api.onrender.com';
+    }
+
+    // C. Custom domains or other hosting platforms (Netlify, Vercel, VPS)
+    if (port === '' || port === '80' || port === '443') {
+      // If deployed unified on the backend, origin is the API
+      // Otherwise default to the standard production backend on Render
+      return 'https://terrasight-api.onrender.com';
+    }
+  }
+
   return 'http://localhost:8000';
-})();
+}
+
+export let API_BASE_URL: string = determineApiBaseUrl();
+
+export function getApiBaseUrl(): string {
+  return API_BASE_URL;
+}
+
+export function setApiBaseUrl(newUrl: string): void {
+  const normalized = normalizeApiUrl(newUrl);
+  API_BASE_URL = normalized;
+  apiClient.defaults.baseURL = normalized;
+  if (typeof window !== 'undefined') {
+    localStorage.setItem('terrasight_api_url', normalized);
+    window.dispatchEvent(
+      new CustomEvent('terrasight_api_url_changed', { detail: normalized })
+    );
+  }
+}
+
+export function resetApiBaseUrl(): void {
+  if (typeof window !== 'undefined') {
+    localStorage.removeItem('terrasight_api_url');
+    localStorage.removeItem('cleanpath_api_url');
+  }
+  const detected = determineApiBaseUrl();
+  API_BASE_URL = detected;
+  apiClient.defaults.baseURL = detected;
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('terrasight_api_url_changed', { detail: detected })
+    );
+  }
+}
+
+export async function testBackendHealth(
+  targetUrl?: string
+): Promise<{ ok: boolean; message: string; latencyMs: number; raw?: any }> {
+  const target = normalizeApiUrl(targetUrl || getApiBaseUrl());
+  const start = Date.now();
+  try {
+    const res = await axios.get(`${target}/health`, { timeout: 30000 });
+    const latency = Date.now() - start;
+    if (res.status === 200 && (res.data?.status === 'ok' || res.data?.service)) {
+      return {
+        ok: true,
+        message: `Connected (${latency}ms) — All Subsystems Online`,
+        latencyMs: latency,
+        raw: res.data,
+      };
+    }
+    return {
+      ok: false,
+      message: `Server responded with HTTP ${res.status}`,
+      latencyMs: latency,
+      raw: res.data,
+    };
+  } catch (err: any) {
+    const latency = Date.now() - start;
+    if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+      return {
+        ok: false,
+        message:
+          'Connection timed out. On Render free tier, backend takes 30-50s to wake up from sleep.',
+        latencyMs: latency,
+      };
+    }
+    const errMsg =
+      err.response?.data?.detail || err.message || 'Unable to connect to backend server';
+    return {
+      ok: false,
+      message: `Failed to connect (${errMsg})`,
+      latencyMs: latency,
+    };
+  }
+}
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 30000,
+  timeout: 60000, // 60s timeout accommodates Render free-tier cold starts
 });
 
 apiClient.interceptors.request.use((config) => {
+  // Ensure baseURL is always synchronized with the current active URL
+  config.baseURL = getApiBaseUrl();
+
   const token =
     localStorage.getItem('terrasight_token') ||
     localStorage.getItem('cleanpath_token');
@@ -58,7 +198,7 @@ export function resolveImageUrl(pathOrUrl: string): string {
     return pathOrUrl;
   }
   const normalized = pathOrUrl.startsWith('/') ? pathOrUrl : `/uploads/${pathOrUrl}`;
-  return `${API_BASE_URL}${normalized}`;
+  return `${getApiBaseUrl()}${normalized}`;
 }
 
 export async function loginApi(username: string, password: string): Promise<AuthResponse> {

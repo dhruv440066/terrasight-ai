@@ -1,15 +1,19 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import axios from 'axios';
 import {
   AlertCircle,
   ArrowRight,
   Leaf,
   Lock,
+  RefreshCw,
+  Settings,
   ShieldCheck,
   User as UserIcon,
   UserCheck,
 } from 'lucide-react';
-import { loginApi, registerApi } from '../api';
+import { getApiBaseUrl, loginApi, registerApi, testBackendHealth } from '../api';
 import type { UserProfile, UserRole } from '../types';
+import { ServerConfigModal } from './ServerConfigModal';
 
 interface LoginPageProps {
   onAuthenticated: (token: string, user: UserProfile) => void;
@@ -27,11 +31,27 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   const [password, setPassword] = useState<string>('citizen123');
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [isNetworkError, setIsNetworkError] = useState<boolean>(false);
+  const [isServerModalOpen, setIsServerModalOpen] = useState<boolean>(false);
+  const [currentApiUrl, setCurrentApiUrl] = useState<string>(() => getApiBaseUrl());
+  const [isPingingServer, setIsPingingServer] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handleUrlChange = (e: Event) => {
+      const customEvent = e as CustomEvent<string>;
+      setCurrentApiUrl(customEvent.detail || getApiBaseUrl());
+    };
+    window.addEventListener('terrasight_api_url_changed', handleUrlChange);
+    return () => {
+      window.removeEventListener('terrasight_api_url_changed', handleUrlChange);
+    };
+  }, []);
 
   const handleRoleSwitch = (role: UserRole) => {
     setSelectedRole(role);
     setIsRegisterMode(false);
     setError(null);
+    setIsNetworkError(false);
     if (role === 'citizen') {
       setUsername('citizen');
       setPassword('citizen123');
@@ -41,9 +61,25 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     }
   };
 
+  const handleWakeServer = async () => {
+    setIsPingingServer(true);
+    try {
+      const res = await testBackendHealth();
+      if (res.ok) {
+        setError(null);
+        setIsNetworkError(false);
+      } else {
+        setError(res.message);
+      }
+    } finally {
+      setIsPingingServer(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setIsNetworkError(false);
     setLoading(true);
 
     try {
@@ -66,16 +102,35 @@ export const LoginPage: React.FC<LoginPageProps> = ({
       }
     } catch (err: unknown) {
       let detail = 'Authentication failed. Please check your credentials.';
-      if (
-        typeof err === 'object' &&
-        err !== null &&
-        'response' in err &&
-        typeof (err as { response?: { data?: { detail?: string } } }).response?.data
-          ?.detail === 'string'
-      ) {
-        detail = (err as { response: { data: { detail: string } } }).response.data.detail;
+      let netErr = false;
+
+      if (axios.isAxiosError(err)) {
+        if (!err.response) {
+          netErr = true;
+          if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+            detail = `Connection timed out reaching backend (${getApiBaseUrl()}). If your Render service was sleeping, it takes 30-50s to spin up. Please retry in a few moments.`;
+          } else {
+            detail = `Unable to connect to backend server at ${getApiBaseUrl()}. Please verify your backend is active or update the server URL below.`;
+          }
+        } else if (err.response.status === 404) {
+          netErr = true;
+          detail = `API endpoint not found (404) at ${getApiBaseUrl()}. Please verify that the Backend Server URL points to the FastAPI service.`;
+        } else if (err.response.status === 401) {
+          detail = 'Invalid credentials. Please verify your username and password.';
+        } else if (
+          err.response.data &&
+          typeof err.response.data === 'object' &&
+          'detail' in err.response.data &&
+          typeof (err.response.data as { detail: string }).detail === 'string'
+        ) {
+          detail = (err.response.data as { detail: string }).detail;
+        }
+      } else if (err instanceof Error) {
+        detail = err.message;
       }
+
       setError(detail);
+      setIsNetworkError(netErr);
     } finally {
       setLoading(false);
     }
@@ -99,9 +154,23 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               </p>
             </div>
           </div>
-          <span className="hidden rounded-full border border-slate-700 bg-slate-800/80 px-3 py-1 text-xs font-semibold text-slate-300 sm:inline-block">
-            100% Local Civic-Tech Platform
-          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsServerModalOpen(true)}
+              className="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-800/90 px-3.5 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-slate-500 hover:bg-slate-700"
+              title="Click to configure Backend API endpoint"
+            >
+              <span className="h-2 w-2 rounded-full bg-emerald-400"></span>
+              <span className="max-w-[180px] sm:max-w-[260px] truncate font-mono text-[11px] text-slate-300">
+                {currentApiUrl}
+              </span>
+              <Settings className="h-3.5 w-3.5 text-slate-400" />
+            </button>
+            <span className="hidden rounded-full border border-slate-700 bg-slate-800/80 px-3 py-1 text-xs font-semibold text-slate-300 md:inline-block">
+              100% Local Civic-Tech
+            </span>
+          </div>
         </div>
       </header>
 
@@ -189,10 +258,40 @@ export const LoginPage: React.FC<LoginPageProps> = ({
             </div>
 
             {error && (
-              <div className="mb-5 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs font-semibold text-red-700">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                <span>{error}</span>
-              </div>
+              isNetworkError ? (
+                <div className="mb-5 rounded-lg border border-red-200 bg-red-50 p-3.5 text-xs text-red-800">
+                  <div className="flex items-start gap-2.5">
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+                    <div className="flex-1 space-y-2">
+                      <p className="font-semibold leading-relaxed">{error}</p>
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setIsServerModalOpen(true)}
+                          className="flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-bold text-slate-800 shadow-xs transition hover:bg-slate-50"
+                        >
+                          <Settings className="h-3 w-3 text-slate-600" />
+                          <span>Configure Server URL</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleWakeServer}
+                          disabled={isPingingServer}
+                          className="flex items-center gap-1 rounded-md bg-red-600 px-2.5 py-1 text-xs font-bold text-white shadow-xs transition hover:bg-red-700 disabled:opacity-50"
+                        >
+                          <RefreshCw className={`h-3 w-3 ${isPingingServer ? 'animate-spin' : ''}`} />
+                          <span>{isPingingServer ? 'Waking...' : 'Wake / Test Server'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="mb-5 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs font-semibold text-red-700">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  <span>{error}</span>
+                </div>
+              )
             )}
 
             <form onSubmit={handleSubmit} className="space-y-4">
@@ -271,6 +370,12 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   </>
                 )}
               </button>
+
+              {loading && (
+                <p className="mt-2 text-center text-xs text-slate-500 animate-pulse">
+                  Connecting to backend... {currentApiUrl.includes('onrender.com') ? '(Render free tier services may take 30-45s to wake up)' : ''}
+                </p>
+              )}
             </form>
 
             {selectedRole === 'citizen' && (
@@ -290,6 +395,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                     onClick={() => {
                       setIsRegisterMode(!isRegisterMode);
                       setError(null);
+                      setIsNetworkError(false);
                     }}
                     className="text-xs font-semibold text-emerald-700 hover:underline"
                   >
@@ -303,6 +409,16 @@ export const LoginPage: React.FC<LoginPageProps> = ({
           </div>
         </div>
       </main>
+
+      <ServerConfigModal
+        isOpen={isServerModalOpen}
+        onClose={() => setIsServerModalOpen(false)}
+        onSaved={(url) => {
+          setCurrentApiUrl(url);
+          setError(null);
+          setIsNetworkError(false);
+        }}
+      />
     </div>
   );
 };
