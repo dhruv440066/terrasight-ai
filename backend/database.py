@@ -41,9 +41,11 @@ DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DEFAULT_DB_PATH.as_posix()
 if DATABASE_URL == "sqlite:///./cleanpath.db":
     DATABASE_URL = f"sqlite:///{DEFAULT_DB_PATH.as_posix()}"
 
-# Normalize Render/Heroku postgres:// URLs to postgresql:// for SQLAlchemy 2.0+
+# Normalize Render/Heroku postgres:// and generic postgresql:// to use psycopg2 driver
 if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
+elif DATABASE_URL.startswith("postgresql://") and not DATABASE_URL.startswith("postgresql+"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
 
 engine_kwargs = {}
 if DATABASE_URL.startswith("sqlite"):
