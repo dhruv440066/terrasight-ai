@@ -159,6 +159,28 @@ export async function testBackendHealth(
         latencyMs: latency,
       };
     }
+    if (err.response?.status === 503) {
+      const dataStr =
+        typeof err.response.data === 'string'
+          ? err.response.data
+          : JSON.stringify(err.response.data || '');
+      if (
+        dataStr.toLowerCase().includes('suspended') ||
+        err.response.headers?.['x-render-routing'] === 'suspend-by-user'
+      ) {
+        return {
+          ok: false,
+          message:
+            'Service Suspended on Render: Click "Resume Service" in your Render dashboard, or configure your active backend URL.',
+          latencyMs: latency,
+        };
+      }
+      return {
+        ok: false,
+        message: 'Backend returned HTTP 503 Service Unavailable (Service may still be starting).',
+        latencyMs: latency,
+      };
+    }
     const errMsg =
       err.response?.data?.detail || err.message || 'Unable to connect to backend server';
     return {

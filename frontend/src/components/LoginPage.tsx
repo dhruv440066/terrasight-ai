@@ -112,6 +112,20 @@ export const LoginPage: React.FC<LoginPageProps> = ({
           } else {
             detail = `Unable to connect to backend server at ${getApiBaseUrl()}. Please verify your backend is active or update the server URL below.`;
           }
+        } else if (err.response.status === 503) {
+          netErr = true;
+          const dataStr =
+            typeof err.response.data === 'string'
+              ? err.response.data
+              : JSON.stringify(err.response.data || '');
+          if (
+            dataStr.toLowerCase().includes('suspended') ||
+            err.response.headers?.['x-render-routing'] === 'suspend-by-user'
+          ) {
+            detail = `The backend service at ${getApiBaseUrl()} is suspended on Render. In your Render Dashboard, click "Resume Service", or update the URL below if your backend has a different name.`;
+          } else {
+            detail = `The backend at ${getApiBaseUrl()} returned 503 Service Unavailable. The service may still be starting up on Render.`;
+          }
         } else if (err.response.status === 404) {
           netErr = true;
           detail = `API endpoint not found (404) at ${getApiBaseUrl()}. Please verify that the Backend Server URL points to the FastAPI service.`;
