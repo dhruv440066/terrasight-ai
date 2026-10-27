@@ -51,6 +51,64 @@ const ANALYSIS_PROGRESS_STEPS = [
   'Calculating hazard-weighted severity index...',
 ];
 
+async function compressImageForUpload(
+  file: File,
+  maxDimension = 1280,
+  quality = 0.88
+): Promise<File> {
+  return new Promise((resolve) => {
+    // If already small (< 600KB), no need to compress
+    if (file.size <= 600 * 1024) {
+      resolve(file);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxDimension || height > maxDimension) {
+          if (width > height) {
+            height = Math.round((height * maxDimension) / width);
+            width = maxDimension;
+          } else {
+            width = Math.round((width * maxDimension) / height);
+            height = maxDimension;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          canvas.toBlob(
+            (blob) => {
+              if (blob) {
+                const compressed = new File([blob], file.name.replace(/\.[^.]+$/, '.jpg'), {
+                  type: 'image/jpeg',
+                  lastModified: Date.now(),
+                });
+                resolve(compressed);
+                return;
+              }
+              resolve(file);
+            },
+            'image/jpeg',
+            quality
+          );
+        } else {
+          resolve(file);
+        }
+      };
+      img.onerror = () => resolve(file);
+      img.src = e.target?.result as string;
+    };
+    reader.onerror = () => resolve(file);
+    reader.readAsDataURL(file);
+  });
+}
+
 export const CitizenView: React.FC<CitizenViewProps> = ({
   user,
   isGuest,
@@ -218,7 +276,8 @@ export const CitizenView: React.FC<CitizenViewProps> = ({
 
     setAnalyzing(true);
     try {
-      const result = await analyzeWasteImageApi(file);
+      const fileToAnalyze = await compressImageForUpload(file);
+      const result = await analyzeWasteImageApi(fileToAnalyze);
       setAnalysis(result);
       setAddress(result.address || '');
       if (
@@ -242,10 +301,25 @@ export const CitizenView: React.FC<CitizenViewProps> = ({
         typeof err === 'object' &&
         err !== null &&
         'response' in err &&
-        typeof (err as { response?: { data?: { detail?: string } } }).response?.data
-          ?.detail === 'string'
+        typeof (err as { response?: { data?: { detail?: string }; status?: number } }).response
+          ?.data?.detail === 'string'
       ) {
         msg = (err as { response: { data: { detail: string } } }).response.data.detail;
+      } else if (
+        typeof err === 'object' &&
+        err !== null &&
+        'response' in err &&
+        (err as { response?: { status?: number } }).response?.status === 502
+      ) {
+        msg = 'Server was busy or restarting on Render. Please wait 10 seconds and try again.';
+      } else if (
+        typeof err === 'object' &&
+        err !== null &&
+        'message' in err &&
+        typeof (err as { message?: string }).message === 'string' &&
+        (err as { message: string }).message.includes('timeout')
+      ) {
+        msg = 'Image analysis timed out on Render free tier. Please upload a smaller photo or retry.';
       }
       setError(msg);
     } finally {

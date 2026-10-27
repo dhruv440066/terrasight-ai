@@ -583,15 +583,23 @@ class VisionEngine:
 
         # Step 1: Run COCO model (if available) to identify non-waste subjects (person/car/laptop)
         # AND COCO waste items (bottles, cups, bananas, apples, oranges, bowls)
-        if self.coco_model is not None:
+        if self.coco_model is not None and self.coco_model is not self.model:
             try:
-                coco_results = self.coco_model.predict(
-                    source=img_bgr,
-                    device=self.device,
-                    imgsz=min(1024, max(640, width)),
-                    conf=0.14,
-                    verbose=False,
-                )
+                try:
+                    import torch
+                    ctx = torch.inference_mode()
+                except Exception:
+                    from contextlib import nullcontext
+                    ctx = nullcontext()
+
+                with ctx:
+                    coco_results = self.coco_model.predict(
+                        source=img_bgr,
+                        device=self.device,
+                        imgsz=640,
+                        conf=0.18,
+                        verbose=False,
+                    )
                 for res in coco_results:
                     names_map = getattr(res, "names", {})
                     boxes = getattr(res, "boxes", None)
@@ -632,87 +640,38 @@ class VisionEngine:
         if person_frame_coverage > 0.35:
             return raw_detections
 
-        # Step 2: Run Primary Model (best.pt) on Full Frame at high resolution
+        # Step 2: Run Primary Model (best.pt) on Full Frame at 640px resolution
         if self.model is not None:
-            full_results = self.model.predict(
-                source=img_bgr,
-                device=self.device,
-                imgsz=min(1024, max(640, width)),
-                conf=0.15,
-                verbose=False,
-            )
-            for res in full_results:
-                names_map = getattr(res, "names", ID_TO_CATEGORY_MAP)
-                boxes = getattr(res, "boxes", None)
-                if boxes is None:
-                    continue
-                for box in boxes:
-                    xyxy = box.xyxy[0].tolist()
-                    x1, y1, x2, y2 = [int(round(v)) for v in xyxy]
-                    x1, y1 = max(0, x1), max(0, y1)
-                    x2, y2 = min(width, x2), min(height, y2)
-                    box_area = float(max(0, x2 - x1) * max(0, y2 - y1))
+            try:
+                try:
+                    import torch
+                    ctx = torch.inference_mode()
+                except Exception:
+                    from contextlib import nullcontext
+                    ctx = nullcontext()
 
-                    # Skip tiny noise or overly huge background boxes
-                    if box_area < total_area * 0.0015 or box_area > total_area * 0.42:
-                        continue
-
-                    bbox_dict = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
-                    if any(_compute_containment(bbox_dict, nw) > 0.50 for nw in non_waste_boxes):
-                        continue
-
-                    conf = float(box.conf[0].item())
-                    cls_id = int(box.cls[0].item())
-                    raw_name = (
-                        names_map.get(cls_id, "Plastic Waste")
-                        if isinstance(names_map, dict)
-                        else str(cls_id)
+                with ctx:
+                    full_results = self.model.predict(
+                        source=img_bgr,
+                        device=self.device,
+                        imgsz=640,
+                        conf=0.15,
+                        verbose=False,
                     )
-                    initial_cat = map_taco_class_to_category(str(raw_name))
-                    roi_hsv = img_hsv[y1:y2, x1:x2]
-                    refined_cat, refined_conf = self._refine_category_from_roi(
-                        roi_hsv, initial_cat, conf
-                    )
-
-                    raw_detections.append(
-                        {
-                            "class_name": refined_cat,
-                            "confidence": round(refined_conf, 2),
-                            "bbox": bbox_dict,
-                            "area_ratio": round(box_area / total_area, 4),
-                        }
-                    )
-
-        # Step 3: High-Resolution Foreground Tile Pass (for dense piles with bottles, bananas, wrappers)
-        if width >= 800 and height >= 600:
-            tile_x1 = int(width * 0.18)
-            tile_y1 = int(height * 0.35)
-            tile_x2 = int(width * 0.86)
-            tile_y2 = int(height * 0.96)
-            tile_bgr = img_bgr[tile_y1:tile_y2, tile_x1:tile_x2]
-
-            # 3a. Tiled TACO best.pt pass (spots clear plastic water bottles & wrappers inside pile)
-            if self.model is not None and tile_bgr.size > 0:
-                tile_res = self.model.predict(
-                    source=tile_bgr,
-                    device=self.device,
-                    imgsz=1024,
-                    conf=0.20,
-                    verbose=False,
-                )
-                for res in tile_res:
+                for res in full_results:
                     names_map = getattr(res, "names", ID_TO_CATEGORY_MAP)
                     boxes = getattr(res, "boxes", None)
                     if boxes is None:
                         continue
                     for box in boxes:
-                        tx1, ty1, tx2, ty2 = [int(round(v)) for v in box.xyxy[0].tolist()]
-                        x1 = max(0, min(width, tile_x1 + tx1))
-                        y1 = max(0, min(height, tile_y1 + ty1))
-                        x2 = max(x1, min(width, tile_x1 + tx2))
-                        y2 = max(y1, min(height, tile_y1 + ty2))
-                        box_area = float((x2 - x1) * (y2 - y1))
-                        if box_area < total_area * 0.002 or box_area > total_area * 0.25:
+                        xyxy = box.xyxy[0].tolist()
+                        x1, y1, x2, y2 = [int(round(v)) for v in xyxy]
+                        x1, y1 = max(0, x1), max(0, y1)
+                        x2, y2 = min(width, x2), min(height, y2)
+                        box_area = float(max(0, x2 - x1) * max(0, y2 - y1))
+
+                        # Skip tiny noise or overly huge background boxes
+                        if box_area < total_area * 0.0015 or box_area > total_area * 0.42:
                             continue
 
                         bbox_dict = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
@@ -729,8 +688,9 @@ class VisionEngine:
                         initial_cat = map_taco_class_to_category(str(raw_name))
                         roi_hsv = img_hsv[y1:y2, x1:x2]
                         refined_cat, refined_conf = self._refine_category_from_roi(
-                            roi_hsv, initial_cat, min(0.92, conf + 0.12)
+                            roi_hsv, initial_cat, conf
                         )
+
                         raw_detections.append(
                             {
                                 "class_name": refined_cat,
@@ -739,51 +699,19 @@ class VisionEngine:
                                 "area_ratio": round(box_area / total_area, 4),
                             }
                         )
+            except Exception as exc:
+                logger.warning("Primary YOLOv8 pass error: %s", exc)
 
-            # 3b. Tiled COCO yolov8n pass (spots bananas, apples, oranges, bottles, cups in pile)
-            if self.coco_model is not None and tile_bgr.size > 0:
-                tile_coco = self.coco_model.predict(
-                    source=tile_bgr,
-                    device=self.device,
-                    imgsz=1024,
-                    conf=0.12,
-                    verbose=False,
-                )
-                for res in tile_coco:
-                    names_map = getattr(res, "names", {})
-                    boxes = getattr(res, "boxes", None)
-                    if boxes is None:
-                        continue
-                    for box in boxes:
-                        cls_id = int(box.cls[0].item())
-                        cls_name = str(names_map.get(cls_id, "")).lower()
-                        if cls_name not in COCO_WASTE_CLASS_MAP:
-                            continue
-                        tx1, ty1, tx2, ty2 = [int(round(v)) for v in box.xyxy[0].tolist()]
-                        x1 = max(0, min(width, tile_x1 + tx1))
-                        y1 = max(0, min(height, tile_y1 + ty1))
-                        x2 = max(x1, min(width, tile_x1 + tx2))
-                        y2 = max(y1, min(height, tile_y1 + ty2))
-                        box_area = float((x2 - x1) * (y2 - y1))
-                        if box_area < total_area * 0.0015 or box_area > total_area * 0.20:
-                            continue
-                        conf = float(box.conf[0].item())
-                        mapped_cat = COCO_WASTE_CLASS_MAP[cls_name]
-                        raw_detections.append(
-                            {
-                                "class_name": mapped_cat,
-                                "confidence": round(min(0.92, conf + 0.45), 2),
-                                "bbox": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
-                                "area_ratio": round(box_area / total_area, 4),
-                            }
-                        )
-
-        # Step 4: Complementary Multi-Spectral Segmentation for Organic Waste & Dry Leaves / Biomass
+        # Step 3: Complementary Multi-Spectral Segmentation for Organic Waste & Dry Leaves / Biomass
         if raw_detections:
             supplemental = self._segment_complementary_waste_regions(
                 img_bgr, img_hsv, raw_detections, non_waste_boxes
             )
             raw_detections.extend(supplemental)
+        else:
+            # If primary YOLO found no objects, run fast analytical fallback
+            fallback_dets = self._run_analytical_fallback(img_bgr)
+            raw_detections.extend(fallback_dets)
 
         # Step 5: Non-Maximum Suppression (NMS) & Category-Balanced Selection
         raw_detections.sort(key=lambda d: float(d["confidence"]), reverse=True)
@@ -944,6 +872,14 @@ class VisionEngine:
             pil_img = Image.open(io.BytesIO(image_source)).convert("RGB")
         else:
             pil_img = Image.open(Path(image_source)).convert("RGB")
+
+        # Memory optimization: resize high-resolution images to max 1024px to prevent OOM
+        max_dim = max(pil_img.size)
+        if max_dim > 1024:
+            scale = 1024.0 / max_dim
+            new_w = max(32, int(pil_img.size[0] * scale))
+            new_h = max(32, int(pil_img.size[1] * scale))
+            pil_img = pil_img.resize((new_w, new_h), Image.Resampling.BILINEAR)
 
         img_width, img_height = pil_img.size
         img_rgb = np.array(pil_img)
