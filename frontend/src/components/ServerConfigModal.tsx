@@ -123,22 +123,22 @@ export const ServerConfigModal: React.FC<ServerConfigModalProps> = ({
               Quick Preset Targets:
             </span>
             <div className="flex flex-wrap gap-2 text-xs">
-              <button
-                type="button"
-                onClick={() => setPreset('https://terrasight-api.onrender.com')}
-                className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 font-medium text-slate-700 transition hover:bg-slate-100"
-              >
-                Render Cloud API
-              </button>
               {typeof window !== 'undefined' && (
                 <button
                   type="button"
                   onClick={() => setPreset(window.location.origin)}
-                  className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 font-medium text-slate-700 transition hover:bg-slate-100"
+                  className="rounded-md border border-emerald-300 bg-emerald-50 px-2.5 py-1 font-semibold text-emerald-800 transition hover:bg-emerald-100"
                 >
                   Current Origin ({window.location.host})
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => setPreset('https://terrasight-ai.onrender.com')}
+                className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 font-medium text-slate-700 transition hover:bg-slate-100"
+              >
+                Render Backend (terrasight-ai)
+              </button>
               <button
                 type="button"
                 onClick={() => setPreset('http://localhost:8000')}

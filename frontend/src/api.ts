@@ -68,26 +68,23 @@ export function determineApiBaseUrl(): string {
 
     // B. Render Cloud deployments (*.onrender.com)
     if (hostname.endsWith('.onrender.com')) {
-      // If hosted directly on the backend web service (e.g. terrasight-api.onrender.com)
-      if (hostname.includes('api') && !hostname.includes('frontend')) {
-        return origin;
-      }
-      // If hosted on a static frontend, derive the backend API URL
+      // If hosted on a dedicated static frontend, derive the backend API service name
       if (hostname.includes('frontend')) {
         return `https://${hostname.replace('frontend', 'api')}`;
       }
       if (hostname.includes('ui')) {
         return `https://${hostname.replace('ui', 'api')}`;
       }
-      // Standard Render blueprint fallback
-      return 'https://terrasight-api.onrender.com';
+      if (hostname.includes('static')) {
+        return `https://${hostname.replace('static', 'api')}`;
+      }
+      // Otherwise, the service running this app is the unified backend service (e.g. terrasight-ai.onrender.com)
+      return origin;
     }
 
     // C. Custom domains or other hosting platforms (Netlify, Vercel, VPS)
     if (port === '' || port === '80' || port === '443') {
-      // If deployed unified on the backend, origin is the API
-      // Otherwise default to the standard production backend on Render
-      return 'https://terrasight-api.onrender.com';
+      return origin;
     }
   }
 
