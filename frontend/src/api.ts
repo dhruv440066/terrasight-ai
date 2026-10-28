@@ -190,7 +190,7 @@ export async function testBackendHealth(
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 60000, // 60s timeout accommodates Render free-tier cold starts
+  timeout: 120000, // 120s timeout ensures slow mobile networks and cold starts never abort
 });
 
 apiClient.interceptors.request.use((config) => {

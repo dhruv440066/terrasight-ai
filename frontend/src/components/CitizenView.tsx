@@ -53,20 +53,19 @@ const ANALYSIS_PROGRESS_STEPS = [
 
 async function compressImageForUpload(
   file: File,
-  maxDimension = 1280,
-  quality = 0.88
+  maxDimension = 1024,
+  quality = 0.85
 ): Promise<File> {
   return new Promise((resolve) => {
-    // If already small (< 600KB), no need to compress
-    if (file.size <= 600 * 1024) {
-      resolve(file);
-      return;
-    }
     const reader = new FileReader();
     reader.onload = (e) => {
       const img = new Image();
       img.onload = () => {
         let { width, height } = img;
+        if (width <= maxDimension && height <= maxDimension && file.size <= 400 * 1024) {
+          resolve(file);
+          return;
+        }
         if (width > maxDimension || height > maxDimension) {
           if (width > height) {
             height = Math.round((height * maxDimension) / width);

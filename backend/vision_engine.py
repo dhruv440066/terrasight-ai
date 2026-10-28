@@ -259,6 +259,11 @@ class VisionEngine:
             import torch
 
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            if self.device == "cpu":
+                try:
+                    torch.set_num_threads(2)
+                except Exception:
+                    pass
         except Exception:
             self.device = "cpu"
 
@@ -581,66 +586,7 @@ class VisionEngine:
         raw_detections: List[Dict[str, Any]] = []
         non_waste_boxes: List[Dict[str, int]] = []
 
-        # Step 1: Run COCO model (if available) to identify non-waste subjects (person/car/laptop)
-        # AND COCO waste items (bottles, cups, bananas, apples, oranges, bowls)
-        if self.coco_model is not None and self.coco_model is not self.model:
-            try:
-                try:
-                    import torch
-                    ctx = torch.inference_mode()
-                except Exception:
-                    from contextlib import nullcontext
-                    ctx = nullcontext()
-
-                with ctx:
-                    coco_results = self.coco_model.predict(
-                        source=img_bgr,
-                        device=self.device,
-                        imgsz=640,
-                        conf=0.18,
-                        verbose=False,
-                    )
-                for res in coco_results:
-                    names_map = getattr(res, "names", {})
-                    boxes = getattr(res, "boxes", None)
-                    if boxes is None:
-                        continue
-                    for box in boxes:
-                        xyxy = box.xyxy[0].tolist()
-                        x1, y1, x2, y2 = [int(round(v)) for v in xyxy]
-                        x1, y1 = max(0, x1), max(0, y1)
-                        x2, y2 = min(width, x2), min(height, y2)
-                        conf = float(box.conf[0].item())
-                        cls_id = int(box.cls[0].item())
-                        cls_name = str(names_map.get(cls_id, "")).lower()
-                        bbox_dict = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
-
-                        if cls_name in COCO_NON_WASTE_CLASSES and conf >= 0.30:
-                            non_waste_boxes.append(bbox_dict)
-                        elif cls_name in COCO_WASTE_CLASS_MAP:
-                            mapped_cat = COCO_WASTE_CLASS_MAP[cls_name]
-                            box_area = float(max(0, x2 - x1) * max(0, y2 - y1))
-                            raw_detections.append(
-                                {
-                                    "class_name": mapped_cat,
-                                    "confidence": round(min(0.95, conf + 0.15), 2),
-                                    "bbox": bbox_dict,
-                                    "area_ratio": round(box_area / total_area, 4),
-                                }
-                            )
-            except Exception as exc:
-                logger.debug("Auxiliary COCO pass skipped: %s", exc)
-
-        # If a human/person occupies >35% of the entire frame (e.g. a selfie or portrait),
-        # only return genuine high-confidence COCO waste objects (if any) and skip pile segmentation.
-        person_frame_coverage = sum(
-            float((b["x2"] - b["x1"]) * (b["y2"] - b["y1"])) / total_area
-            for b in non_waste_boxes
-        )
-        if person_frame_coverage > 0.35:
-            return raw_detections
-
-        # Step 2: Run Primary Model (best.pt) on Full Frame at 640px resolution
+        # Step 1: Run Primary Model (best.pt) at 480px resolution (ultra-fast, low memory)
         if self.model is not None:
             try:
                 try:
@@ -654,7 +600,7 @@ class VisionEngine:
                     full_results = self.model.predict(
                         source=img_bgr,
                         device=self.device,
-                        imgsz=640,
+                        imgsz=480,
                         conf=0.15,
                         verbose=False,
                     )
@@ -675,9 +621,6 @@ class VisionEngine:
                             continue
 
                         bbox_dict = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
-                        if any(_compute_containment(bbox_dict, nw) > 0.50 for nw in non_waste_boxes):
-                            continue
-
                         conf = float(box.conf[0].item())
                         cls_id = int(box.cls[0].item())
                         raw_name = (
@@ -701,6 +644,53 @@ class VisionEngine:
                         )
             except Exception as exc:
                 logger.warning("Primary YOLOv8 pass error: %s", exc)
+
+        # Step 2: Fallback to COCO model only if primary model detected nothing
+        if not raw_detections and self.coco_model is not None and self.coco_model is not self.model:
+            try:
+                try:
+                    import torch
+                    ctx = torch.inference_mode()
+                except Exception:
+                    from contextlib import nullcontext
+                    ctx = nullcontext()
+
+                with ctx:
+                    coco_results = self.coco_model.predict(
+                        source=img_bgr,
+                        device=self.device,
+                        imgsz=480,
+                        conf=0.18,
+                        verbose=False,
+                    )
+                for res in coco_results:
+                    names_map = getattr(res, "names", {})
+                    boxes = getattr(res, "boxes", None)
+                    if boxes is None:
+                        continue
+                    for box in boxes:
+                        xyxy = box.xyxy[0].tolist()
+                        x1, y1, x2, y2 = [int(round(v)) for v in xyxy]
+                        x1, y1 = max(0, x1), max(0, y1)
+                        x2, y2 = min(width, x2), min(height, y2)
+                        conf = float(box.conf[0].item())
+                        cls_id = int(box.cls[0].item())
+                        cls_name = str(names_map.get(cls_id, "")).lower()
+                        bbox_dict = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+
+                        if cls_name in COCO_WASTE_CLASS_MAP:
+                            mapped_cat = COCO_WASTE_CLASS_MAP[cls_name]
+                            box_area = float(max(0, x2 - x1) * max(0, y2 - y1))
+                            raw_detections.append(
+                                {
+                                    "class_name": mapped_cat,
+                                    "confidence": round(min(0.95, conf + 0.15), 2),
+                                    "bbox": bbox_dict,
+                                    "area_ratio": round(box_area / total_area, 4),
+                                }
+                            )
+            except Exception as exc:
+                logger.debug("Auxiliary COCO pass skipped: %s", exc)
 
         # Step 3: Complementary Multi-Spectral Segmentation for Organic Waste & Dry Leaves / Biomass
         if raw_detections:
