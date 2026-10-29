@@ -2,31 +2,45 @@ const fs = require('fs');
 const cp = require('child_process');
 const path = require('path');
 
-// Check if we are running from the repository root (frontend/package.json exists)
-const hasFrontendDir = fs.existsSync(path.join(process.cwd(), 'frontend', 'package.json'));
-const projectDir = hasFrontendDir ? path.resolve('frontend') : process.cwd();
+const rootDir = process.cwd();
+const hasFrontendFolder = fs.existsSync(path.join(rootDir, 'frontend', 'package.json'));
+const frontendDir = hasFrontendFolder ? path.join(rootDir, 'frontend') : rootDir;
 
-console.log(`[TerraSight Build] Building frontend from directory: ${projectDir}`);
+console.log('[TerraSight Build] Target frontend directory:', frontendDir);
 
-// Ensure dependencies are installed in projectDir
-console.log('[TerraSight Build] Installing frontend dependencies...');
-cp.execSync('npm install --include=dev', {
-  cwd: projectDir,
-  stdio: 'inherit',
-});
+// 1. Install dependencies in frontend directory
+console.log('[TerraSight Build] Step 1: Installing dependencies...');
+try {
+  cp.execSync('npm install --include=dev', { cwd: frontendDir, stdio: 'inherit' });
+} catch (e) {
+  console.warn('[TerraSight Build] npm install warning:', e.message);
+  cp.execSync('npm install', { cwd: frontendDir, stdio: 'inherit' });
+}
 
-// Run vite build directly using npx
-console.log('[TerraSight Build] Compiling frontend production bundle with Vite...');
-cp.execSync('npx vite build', {
-  cwd: projectDir,
-  stdio: 'inherit',
-});
+// 2. Locate vite binary and compile
+console.log('[TerraSight Build] Step 2: Compiling production bundle with Vite...');
+const viteBin = path.join(frontendDir, 'node_modules', 'vite', 'bin', 'vite.js');
+if (fs.existsSync(viteBin)) {
+  cp.execSync(`node "${viteBin}" build`, { cwd: frontendDir, stdio: 'inherit' });
+} else {
+  cp.execSync('npx vite build', { cwd: frontendDir, stdio: 'inherit' });
+}
 
-// If in root, copy frontend/dist -> dist so outputDirectory "dist" matches in both root and frontend
-const sourceDist = path.join(projectDir, 'dist');
-if (hasFrontendDir) {
-  const rootDist = path.resolve('dist');
+// 3. Mirror dist to root and frontend so outputDirectory matches wherever Vercel checks
+console.log('[TerraSight Build] Step 3: Synchronizing output dist folders...');
+const sourceDist = path.join(frontendDir, 'dist');
+if (!fs.existsSync(sourceDist)) {
+  throw new Error(`Build failed: dist folder was not generated at ${sourceDist}`);
+}
+
+const rootDist = path.join(rootDir, 'dist');
+if (rootDist !== sourceDist) {
   fs.cpSync(sourceDist, rootDist, { recursive: true });
 }
 
-console.log('[TerraSight Build] Frontend built successfully.');
+const nestedDist = path.join(rootDir, 'frontend', 'dist');
+if (nestedDist !== sourceDist) {
+  fs.cpSync(sourceDist, nestedDist, { recursive: true });
+}
+
+console.log('[TerraSight Build] Build complete! Production bundle verified.');
