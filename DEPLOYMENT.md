@@ -192,3 +192,60 @@ Once your services are deployed, test them using these endpoints:
    Navigate to `https://<your-frontend>.onrender.com`:
    - Open `/citizen`: Upload an image, view EXIF GPS coordinate parsing (or pick a location manually), observe detected bounding boxes & severity score, and submit a complaint.
    - Open `/officer`: View live database statistics, 50-meter DBSCAN hotspot circles on the Leaflet GIS map, and dispatch sanitation crews.
+
+
+---
+
+## 8. Vercel Deployment Guide (100% Free, Global Edge CDN, Zero Cold Starts)
+
+Deploying **TerraSight AI** to **Vercel** provides instant global CDN speeds and zero-latency loading for the React frontend, along with an optional built-in Serverless Python API.
+
+### Why Vercel?
+1. **Blazing Fast**: The Vite/React frontend builds in under 30 seconds and is served directly from Vercel's global edge network.
+2. **Zero Frontend Cold Starts**: Unlike Render free-tier instances that sleep after 15 minutes of inactivity, Vercel static pages load immediately.
+3. **No File Size Or Build Failures**: Vercel routes are pre-configured via `vercel.json` with SPA routing rewrites.
+
+### Deployment Architecture Options on Vercel:
+
+#### Option A: Full-Stack on Vercel (Frontend + Serverless API)
+- Vercel builds the React frontend from `frontend/` and hosts it globally.
+- Vercel automatically deploys `api/index.py` as a Python Serverless Function using `api/requirements.txt` (FastAPI + OpenCV + Scikit-Learn + SQLAlchemy without giant 1.5GB PyTorch).
+- The vision engine runs the lightweight OpenCV Analytical Engine (<100ms inference, zero OOMs, 3-category waste detection, EXIF GPS, and 50m DBSCAN clustering).
+- Zero external servers needed!
+
+#### Option B: Hybrid (Vercel Frontend + Render/Railway/HF Backend)
+- Vercel hosts the React frontend (`https://terrasight-ai.vercel.app`).
+- Backend runs on Render (`https://terrasight-ai.onrender.com`) or Hugging Face Spaces (16GB RAM free) with full PyTorch YOLOv8 models.
+- Set environment variable in Vercel: `VITE_API_URL=https://terrasight-ai.onrender.com`.
+
+---
+
+### Step-by-Step Instructions to Deploy on Vercel
+
+1. **Push your code to GitHub**:
+   ```bash
+   git add .
+   git commit -m "Configure Vercel zero-config deployment"
+   git push origin main
+   ```
+
+2. **Import Repository in Vercel**:
+   - Go to [vercel.com](https://vercel.com) and log in with your GitHub account.
+   - Click **"Add New..."** -> **"Project"**.
+   - Select **`dhruv440066/terrasight-ai`** from your repository list and click **"Import"**.
+
+3. **Verify Build Settings**:
+   - Vercel will detect `vercel.json` automatically:
+     - **Framework Preset**: Vite
+     - **Build Command**: `cd frontend && npm install && npm run build`
+     - **Output Directory**: `frontend/dist`
+   - *(Optional)* Under **Environment Variables**, you can add:
+     - `VITE_API_URL`: Your backend URL (e.g. `https://terrasight-ai.onrender.com`), or leave blank to use the built-in Vercel Serverless API.
+
+4. **Click "Deploy"**:
+   - Within 60 seconds, your site will be live at `https://terrasight-ai.vercel.app` (or your custom assigned Vercel URL)!
+
+5. **Log In and Test**:
+   - **Citizen Login**: `citizen` / `citizen123`
+   - **Officer Login**: `officer` / `officer123`
+   - Use the **"Server Config"** button in the navigation bar anytime to verify connection status or point to any custom API.

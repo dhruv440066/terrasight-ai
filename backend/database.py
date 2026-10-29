@@ -35,7 +35,12 @@ load_dotenv()
 logger = logging.getLogger("cleanpath.database")
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_DB_PATH = BASE_DIR / "cleanpath.db"
+IS_SERVERLESS = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
+if IS_SERVERLESS and not os.getenv("DATABASE_URL"):
+    DEFAULT_DB_PATH = Path("/tmp") / "cleanpath.db"
+else:
+    DEFAULT_DB_PATH = BASE_DIR / "cleanpath.db"
+
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DEFAULT_DB_PATH.as_posix()}")
 
 if DATABASE_URL == "sqlite:///./cleanpath.db":

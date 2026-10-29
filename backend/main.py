@@ -89,13 +89,23 @@ logging.basicConfig(
 logger = logging.getLogger("cleanpath.api")
 
 BACKEND_DIR = Path(__file__).resolve().parent
-UPLOAD_DIR = BACKEND_DIR / os.getenv("UPLOAD_DIR", "uploads")
-MODELS_DIR = BACKEND_DIR / "models"
-REPORTS_DIR = BACKEND_DIR / "generated_reports"
+IS_SERVERLESS = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
+if IS_SERVERLESS:
+    TMP_DIR = Path("/tmp")
+    UPLOAD_DIR = TMP_DIR / os.getenv("UPLOAD_DIR", "uploads")
+    MODELS_DIR = TMP_DIR / "models"
+    REPORTS_DIR = TMP_DIR / "generated_reports"
+else:
+    UPLOAD_DIR = BACKEND_DIR / os.getenv("UPLOAD_DIR", "uploads")
+    MODELS_DIR = BACKEND_DIR / "models"
+    REPORTS_DIR = BACKEND_DIR / "generated_reports"
 
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-MODELS_DIR.mkdir(parents=True, exist_ok=True)
-REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+except Exception as e:
+    logger.warning("Could not create directories: %s", e)
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 ALLOWED_MIME_TYPES = {"image/jpeg", "image/jpg", "image/png"}
@@ -1045,8 +1055,8 @@ if "*" in allowed_origins:
 else:
     cors_kwargs["allow_origins"] = allowed_origins
     cors_kwargs["allow_credentials"] = True
-    # Allow all Render preview and custom onrender.com subdomains
-    cors_kwargs["allow_origin_regex"] = r"^https:\/\/[a-zA-Z0-9_.-]+\.onrender\.com$"
+    # Allow all Render and Vercel preview/production domains
+    cors_kwargs["allow_origin_regex"] = r"^https:\/\/[a-zA-Z0-9_.-]+(\.onrender\.com|\.vercel\.app)$"
 
 app.add_middleware(
     CORSMiddleware,
@@ -1251,6 +1261,7 @@ def get_me(current_user: User = Depends(get_current_user)) -> User:
     summary="Upload a waste photograph, extract EXIF GPS, and run AI waste detection & severity scoring",
 )
 @app.post("/api/reports/analyze", tags=["Citizen Portal"], include_in_schema=False)
+@app.post("/api/incidents/analyze", tags=["Citizen Portal"], include_in_schema=False)
 def analyze_incident_image(
     file: UploadFile = File(..., description="Waste photograph (.jpg, .jpeg, .png)"),
 ) -> Dict[str, Any]:
@@ -1329,6 +1340,12 @@ def analyze_incident_image(
 )
 @app.post(
     "/api/reports",
+    status_code=status.HTTP_201_CREATED,
+    tags=["Citizen Portal"],
+    include_in_schema=False,
+)
+@app.post(
+    "/api/incidents",
     status_code=status.HTTP_201_CREATED,
     tags=["Citizen Portal"],
     include_in_schema=False,
