@@ -2,29 +2,31 @@ const fs = require('fs');
 const cp = require('child_process');
 const path = require('path');
 
-const inRoot = fs.existsSync('frontend');
-const projectDir = inRoot ? path.resolve('frontend') : process.cwd();
+// Check if we are running from the repository root (frontend/package.json exists)
+const hasFrontendDir = fs.existsSync(path.join(process.cwd(), 'frontend', 'package.json'));
+const projectDir = hasFrontendDir ? path.resolve('frontend') : process.cwd();
 
 console.log(`[TerraSight Build] Building frontend from directory: ${projectDir}`);
 
-// Run npm run build
-cp.execSync('npm run build', {
+// Ensure dependencies are installed in projectDir
+console.log('[TerraSight Build] Installing frontend dependencies...');
+cp.execSync('npm install --include=dev', {
   cwd: projectDir,
   stdio: 'inherit',
 });
 
-// Sync dist so both ./dist and ./frontend/dist exist regardless of where Vercel looks
+// Run vite build directly using npx
+console.log('[TerraSight Build] Compiling frontend production bundle with Vite...');
+cp.execSync('npx vite build', {
+  cwd: projectDir,
+  stdio: 'inherit',
+});
+
+// If in root, copy frontend/dist -> dist so outputDirectory "dist" matches in both root and frontend
 const sourceDist = path.join(projectDir, 'dist');
-if (inRoot) {
-  // If in root, copy frontend/dist -> dist
-  fs.cpSync(sourceDist, path.resolve('dist'), { recursive: true });
-} else {
-  // If in frontend, copy dist -> frontend/dist
-  const nestedFrontend = path.resolve('frontend');
-  if (!fs.existsSync(nestedFrontend)) {
-    fs.mkdirSync(nestedFrontend, { recursive: true });
-  }
-  fs.cpSync(sourceDist, path.join(nestedFrontend, 'dist'), { recursive: true });
+if (hasFrontendDir) {
+  const rootDist = path.resolve('dist');
+  fs.cpSync(sourceDist, rootDist, { recursive: true });
 }
 
-console.log('[TerraSight Build] Frontend built and synced successfully to dist & frontend/dist.');
+console.log('[TerraSight Build] Frontend built successfully.');
