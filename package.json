@@ -1,0 +1,9 @@
+{
+  "name": "terrasight-ai",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "build": "node build-vercel.cjs",
+    "vercel-build": "node build-vercel.cjs"
+  }
+}
