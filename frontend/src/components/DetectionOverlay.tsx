@@ -4,8 +4,8 @@ import type { WasteDetection } from '../types';
 
 interface DetectionOverlayProps {
   imageUrl: string;
-  imageWidth: number;
-  imageHeight: number;
+  imageWidth?: number;
+  imageHeight?: number;
   detections: WasteDetection[];
   inferenceMode?: 'YOLOv8' | 'Analytical Fallback';
 }
@@ -28,16 +28,50 @@ const CATEGORY_COLORS: Record<string, { stroke: string; fill: string; bg: string
   },
 };
 
+const SUBCLASS_COLORS: Record<string, { stroke: string; fill: string; bg: string }> = {
+  'Plastic bottle': { stroke: '#1D4ED8', fill: 'rgba(29, 78, 216, 0.14)', bg: '#1E40AF' },
+  'Clear plastic bottle': { stroke: '#0284C7', fill: 'rgba(2, 132, 199, 0.14)', bg: '#0369A1' },
+  'Other plastic bottle': { stroke: '#2563EB', fill: 'rgba(37, 99, 235, 0.14)', bg: '#1D4ED8' },
+  'Glass bottle & jar': { stroke: '#DC2626', fill: 'rgba(220, 38, 38, 0.13)', bg: '#B91C1C' },
+  'Drink & metal can': { stroke: '#059669', fill: 'rgba(5, 150, 105, 0.13)', bg: '#047857' },
+  'Plastic bag & film': { stroke: '#7C3AED', fill: 'rgba(124, 58, 237, 0.14)', bg: '#6D28D9' },
+  'Garbage bag': { stroke: '#EA580C', fill: 'rgba(234, 88, 12, 0.14)', bg: '#C2410C' },
+  'Plastic wrapper': { stroke: '#0891B2', fill: 'rgba(8, 145, 178, 0.14)', bg: '#0E7490' },
+  'Disposable cup': { stroke: '#4F46E5', fill: 'rgba(79, 70, 229, 0.14)', bg: '#4338CA' },
+  'Styrofoam piece': { stroke: '#DB2777', fill: 'rgba(219, 39, 119, 0.14)', bg: '#BE185D' },
+  'Bottle cap, straw & lid': { stroke: '#16A34A', fill: 'rgba(22, 163, 74, 0.14)', bg: '#15803D' },
+  'Food & takeout container': { stroke: '#D97706', fill: 'rgba(217, 119, 6, 0.14)', bg: '#B45309' },
+  'Food & organic waste': { stroke: '#EA580C', fill: 'rgba(234, 88, 12, 0.15)', bg: '#C2410C' },
+  'Cardboard carton': { stroke: '#9333EA', fill: 'rgba(147, 51, 234, 0.13)', bg: '#7E22CE' },
+  'Paper & paper bag': { stroke: '#0D9488', fill: 'rgba(13, 148, 136, 0.13)', bg: '#0F766E' },
+  'Dry leaves & foliage': { stroke: '#16A34A', fill: 'rgba(22, 163, 74, 0.15)', bg: '#15803D' },
+  'Cigarette': { stroke: '#CA8A04', fill: 'rgba(202, 138, 4, 0.15)', bg: '#A16207' },
+  'Mixed litter': { stroke: '#475569', fill: 'rgba(71, 85, 105, 0.13)', bg: '#334155' },
+};
+
 export const DetectionOverlay: React.FC<DetectionOverlayProps> = ({
   imageUrl,
-  imageWidth,
-  imageHeight,
+  imageWidth = 0,
+  imageHeight = 0,
   detections,
   inferenceMode = 'YOLOv8',
 }) => {
   const [showBoxes, setShowBoxes] = useState<boolean>(true);
-  const safeWidth = imageWidth > 0 ? imageWidth : 640;
-  const safeHeight = imageHeight > 0 ? imageHeight : 480;
+  const [naturalDims, setNaturalDims] = useState<{ w: number; h: number } | null>(null);
+
+  const fallbackW = naturalDims
+    ? naturalDims.w > 1024 || naturalDims.h > 1024
+      ? Math.round((naturalDims.w * 1024) / Math.max(naturalDims.w, naturalDims.h))
+      : naturalDims.w
+    : 640;
+  const fallbackH = naturalDims
+    ? naturalDims.w > 1024 || naturalDims.h > 1024
+      ? Math.round((naturalDims.h * 1024) / Math.max(naturalDims.w, naturalDims.h))
+      : naturalDims.h
+    : 480;
+
+  const safeWidth = imageWidth && imageWidth > 0 ? imageWidth : fallbackW;
+  const safeHeight = imageHeight && imageHeight > 0 ? imageHeight : fallbackH;
 
   return (
     <div className="relative w-full overflow-hidden rounded-xl border border-slate-200 bg-slate-950 shadow-sm">
@@ -96,6 +130,12 @@ export const DetectionOverlay: React.FC<DetectionOverlayProps> = ({
         <img
           src={imageUrl}
           alt="Uploaded civic waste preview"
+          onLoad={(e) => {
+            const img = e.currentTarget;
+            if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+              setNaturalDims({ w: img.naturalWidth, h: img.naturalHeight });
+            }
+          }}
           className="block max-h-[460px] w-full select-none object-contain"
         />
 
@@ -110,15 +150,24 @@ export const DetectionOverlay: React.FC<DetectionOverlayProps> = ({
               const { x1, y1, x2, y2 } = det.bbox;
               const boxW = Math.max(8, x2 - x1);
               const boxH = Math.max(8, y2 - y1);
-              const palette = CATEGORY_COLORS[det.class_name] || CATEGORY_COLORS['Plastic Waste'];
+              const displayLabel = det.subclass || det.class_name;
+              const palette =
+                (det.subclass && SUBCLASS_COLORS[det.subclass]) ||
+                CATEGORY_COLORS[det.class_name] ||
+                CATEGORY_COLORS['Plastic Waste'];
               const confPercent = Math.round(det.confidence * 100);
-              const labelText = `${det.class_name} ${confPercent}%`;
-              const labelWidth = Math.min(safeWidth - x1, Math.max(130, labelText.length * 9.5));
-              const labelHeight = Math.max(22, Math.round(safeHeight * 0.048));
-              const labelY = y1 >= labelHeight + 4 ? y1 - labelHeight : y1;
+              const labelText = `${displayLabel} ${confPercent}%`;
+              const fontSize = Math.max(11, Math.min(20, Math.round(safeHeight * 0.023)));
+              const labelHeight = Math.round(fontSize * 1.48);
+              const labelWidth = Math.min(
+                safeWidth,
+                Math.max(82, Math.round(labelText.length * fontSize * 0.56 + 14))
+              );
+              const labelX = Math.max(0, Math.min(x1, safeWidth - labelWidth));
+              const labelY = y1 >= labelHeight + 3 ? y1 - labelHeight : y1;
 
               return (
-                <g key={`${det.class_name}-${idx}`}>
+                <g key={`${displayLabel}-${idx}`}>
                   <rect
                     x={x1}
                     y={y1}
@@ -126,11 +175,11 @@ export const DetectionOverlay: React.FC<DetectionOverlayProps> = ({
                     height={boxH}
                     fill={palette.fill}
                     stroke={palette.stroke}
-                    strokeWidth={Math.max(2.5, safeWidth * 0.004)}
-                    rx={4}
+                    strokeWidth={Math.max(2, safeWidth * 0.0032)}
+                    rx={3}
                   />
                   <rect
-                    x={x1}
+                    x={labelX}
                     y={labelY}
                     width={labelWidth}
                     height={labelHeight}
@@ -138,10 +187,10 @@ export const DetectionOverlay: React.FC<DetectionOverlayProps> = ({
                     rx={3}
                   />
                   <text
-                    x={x1 + 7}
+                    x={labelX + 6}
                     y={labelY + labelHeight * 0.72}
                     fill="#FFFFFF"
-                    fontSize={Math.max(12, Math.round(safeHeight * 0.028))}
+                    fontSize={fontSize}
                     fontWeight="700"
                     fontFamily="system-ui, -apple-system, sans-serif"
                   >

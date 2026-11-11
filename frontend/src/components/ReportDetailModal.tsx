@@ -116,8 +116,6 @@ export const ReportDetailModal: React.FC<ReportDetailModalProps> = ({
           <div className="space-y-4 lg:col-span-7">
             <DetectionOverlay
               imageUrl={fullImageUrl}
-              imageWidth={640}
-              imageHeight={480}
               detections={report.detections || []}
               inferenceMode="YOLOv8"
             />

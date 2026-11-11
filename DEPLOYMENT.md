@@ -210,9 +210,9 @@ Deploying **TerraSight AI** to **Vercel** provides instant global CDN speeds and
 #### Option A: Full-Stack on Vercel Services (Frontend + Serverless API)
 - Root `vercel.json` defines two unified **Vercel Services** under one domain:
   - `frontend`: React/Vite SPA built cleanly from `frontend/` (`installCommand: "npm install --include=dev"`, `buildCommand: "npm run build"`, `outputDirectory: "dist"`).
-  - `api`: Self-contained FastAPI ASGI service running from `api/` (`entrypoint: "index:app"`), powered by lightweight pure-Python dependencies in `api/requirements.txt` (< 85 MB uncompressed, well within Vercel's 250 MB serverless limit).
+  - `api`: Self-contained FastAPI ASGI service running from `api/` (`entrypoint: "index:app"`), powered by **`onnxruntime`** + Pillow + NumPy in `api/requirements.txt` (< 200 MB uncompressed including `api/models/best.onnx` + `api/models/yolov8n.onnx`, well within Vercel's 250 MB serverless limit).
 - All frontend API requests automatically route through `/api/...`, preventing any collision with client-side routes like `/officer/analytics`.
-- The vision engine runs a fast pure-NumPy/Pillow spectral segmentation + HSV classification pipeline (EXIF GPS extraction, bounding boxes, hazard multipliers, severity scoring, and 50m Haversine clustering) with zero cold-start crashes.
+- The vision engine runs real multi-pass Dual-YOLOv8 ONNX inference (`yolov8n.onnx` COCO portrait/context gate + `best.onnx` 13-class TACO waste detector across full-frame and tiled crops), EXIF GPS extraction, item-level bounding boxes, hazard multipliers, severity scoring, and 50m Haversine clustering — without PyTorch or OpenCV overhead.
 - Zero external servers required! *(Optional: set `DATABASE_URL` to a hosted PostgreSQL DB like Neon/Supabase for persistent cloud storage across serverless invocations).*
 
 #### Option B: Hybrid (Vercel Frontend + Render/Railway/HF Backend)

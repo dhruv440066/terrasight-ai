@@ -51,6 +51,7 @@ export interface BoundingBox {
 export interface WasteDetection {
   id?: number;
   class_name: string;
+  subclass?: string;
   category?: string;
   confidence: number;
   bbox: BoundingBox;

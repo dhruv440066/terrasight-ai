@@ -1,23 +1,29 @@
 """
-Computer Vision & Severity Engine for CleanPath AI.
+Computer Vision & Severity Engine for CleanPath AI / TerraSight AI.
 
-Supports:
-1. Hybrid Dual-YOLOv8 inference combining custom TACO weights (backend/models/best.pt)
-   and official COCO YOLOv8n weights (yolov8n.pt) with high-resolution tiled
-   foreground inspection.
-2. Spectral/Chromaticity ROI Verification & Multi-Category Waste Segmentation
-   to overcome TACO dataset class imbalance and reliably detect:
-     - Plastic Waste (clear PET bottles, polyethylene bags, styrofoam, wrappers)
-     - Organic Waste (banana peels, citrus/fruit peels, food scraps, putrescible waste)
-     - Dry Leaves / Biomass (plant leaves/branches, twigs, cardboard boxes, paper)
-3. Human/Background false-positive suppression so selfies/portraits and street
-   cars/trees are not misclassified as waste.
-4. Deterministic OpenCV Analytical Fallback mode when PyTorch/Ultralytics or
-   YOLO weights are unavailable, ensuring 100% local uptime without crashing.
-5. Exact mathematical Severity Engine based on bounding-box area ratios and
-   functional category hazard multipliers defined in train_taco.py.
+Unified Hybrid Dual-YOLOv8 + Spectral ROI Waste Detection Engine supporting:
+1. Fast ONNX Runtime (`onnxruntime` + Pillow + NumPy) for BOTH Vercel Serverless
+   (`api/`) and local deployments with < 200 MB total bundle size and zero OpenCV
+   or PyTorch dependency in serverless environments.
+2. Ultralytics PyTorch (`.pt`) fallback support for local GPU/CPU environments
+   if `.onnx` exports are absent or newer `.pt` weights are configured.
+3. Multi-pass inference:
+   - Pass 1: Official COCO YOLOv8n (`yolov8n.onnx` / `.pt`) for human/portrait
+     & vehicle/indoor false-positive suppression + recognizable waste items
+     (bottles, cups, food scraps).
+   - Pass 2: Custom 13-class TACO YOLOv8n (`models/best.onnx` / `.pt`) across
+     full-frame, foreground crop, and 2x2 overlapping quadrant tiles for sharp
+     multi-object localization on dense street dumps and collages.
+   - Pass 3: Pure-NumPy HSV complementary organic peel & dry leaf cluster
+     verification inside confirmed multi-object waste scenes.
+4. Deterministic OpenCV / NumPy Analytical Fallback ONLY when YOLO weights
+   and runtimes are completely unavailable.
+5. Exact CleanPath Severity Engine preserved across all 3 functional categories
+   (`Plastic Waste`, `Organic Waste`, `Dry Leaves / Biomass`) while attaching
+   specific TACO item labels (`subclass`) to every detection box.
 """
 
+import ast
 import io
 import logging
 import os
@@ -32,15 +38,26 @@ except ImportError:
     cv2 = None  # type: ignore[assignment]
     HAS_CV2 = False
 
+try:
+    import onnxruntime as ort
+
+    HAS_ORT = True
+except ImportError:
+    ort = None  # type: ignore[assignment]
+    HAS_ORT = False
+
 import numpy as np
 from dotenv import load_dotenv
-from PIL import Image
+from PIL import Image, ImageOps
 
 from train_taco import (
     CATEGORY_MULTIPLIERS,
     FUNCTIONAL_CATEGORIES,
+    GRANULAR_TACO_CLASSES,
     ID_TO_CATEGORY_MAP,
+    ID_TO_GRANULAR_CATEGORY_MAP,
     map_taco_class_to_category,
+    map_taco_class_to_granular,
 )
 
 load_dotenv()
@@ -48,39 +65,52 @@ load_dotenv()
 logger = logging.getLogger("cleanpath.vision")
 
 BACKEND_DIR = Path(__file__).resolve().parent
-DEFAULT_CUSTOM_MODEL = BACKEND_DIR / os.getenv("MODEL_PATH", "models/best.pt")
-DEFAULT_BASE_MODEL = BACKEND_DIR / os.getenv("FALLBACK_MODEL_PATH", "yolov8n.pt")
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.20"))
+DEFAULT_CUSTOM_MODEL = BACKEND_DIR / os.getenv("MODEL_PATH", "models/best.onnx")
+DEFAULT_BASE_MODEL = BACKEND_DIR / os.getenv("FALLBACK_MODEL_PATH", "models/yolov8n.onnx")
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.18"))
 
-# COCO classes that represent actual waste/litter items when found in waste scenes
-COCO_WASTE_CLASS_MAP: Dict[str, str] = {
-    "bottle": "Plastic Waste",
-    "cup": "Plastic Waste",
-    "wine glass": "Plastic Waste",
-    "bowl": "Plastic Waste",
-    "handbag": "Plastic Waste",
-    "backpack": "Plastic Waste",
-    "suitcase": "Plastic Waste",
-    "umbrella": "Plastic Waste",
-    "vase": "Plastic Waste",
-    "fork": "Plastic Waste",
-    "knife": "Plastic Waste",
-    "spoon": "Plastic Waste",
-    "banana": "Organic Waste",
-    "apple": "Organic Waste",
-    "sandwich": "Organic Waste",
-    "orange": "Organic Waste",
-    "broccoli": "Organic Waste",
-    "carrot": "Organic Waste",
-    "hot dog": "Organic Waste",
-    "pizza": "Organic Waste",
-    "donut": "Organic Waste",
-    "cake": "Organic Waste",
-    "potted plant": "Dry Leaves / Biomass",
-    "book": "Dry Leaves / Biomass",
+COCO_CLASS_NAMES: Tuple[str, ...] = (
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
+    "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat",
+    "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack",
+    "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball",
+    "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket",
+    "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake",
+    "chair", "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop",
+    "mouse", "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
+    "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush",
+)
+
+# COCO classes mapped to (functional_category, display_subclass, min_conf)
+COCO_WASTE_CLASS_MAP: Dict[str, Tuple[str, str, float]] = {
+    "bottle": ("Plastic Waste", "Plastic bottle", 0.22),
+    "cup": ("Plastic Waste", "Disposable cup", 0.24),
+    "wine glass": ("Plastic Waste", "Glass bottle & jar", 0.30),
+    "bowl": ("Plastic Waste", "Mixed litter", 0.34),
+    "handbag": ("Plastic Waste", "Plastic bag & film", 0.32),
+    "backpack": ("Plastic Waste", "Plastic bag & film", 0.34),
+    "suitcase": ("Plastic Waste", "Mixed litter", 0.35),
+    "umbrella": ("Plastic Waste", "Mixed litter", 0.36),
+    "vase": ("Plastic Waste", "Glass bottle & jar", 0.36),
+    "fork": ("Plastic Waste", "Bottle cap, straw & lid", 0.30),
+    "knife": ("Plastic Waste", "Bottle cap, straw & lid", 0.30),
+    "spoon": ("Plastic Waste", "Bottle cap, straw & lid", 0.30),
+    "banana": ("Organic Waste", "Food & organic waste", 0.22),
+    "apple": ("Organic Waste", "Food & organic waste", 0.24),
+    "sandwich": ("Organic Waste", "Food & organic waste", 0.24),
+    "orange": ("Organic Waste", "Food & organic waste", 0.24),
+    "broccoli": ("Organic Waste", "Food & organic waste", 0.24),
+    "carrot": ("Organic Waste", "Food & organic waste", 0.24),
+    "hot dog": ("Organic Waste", "Food & organic waste", 0.26),
+    "pizza": ("Organic Waste", "Food & organic waste", 0.24),
+    "donut": ("Organic Waste", "Food & organic waste", 0.24),
+    "cake": ("Organic Waste", "Food & organic waste", 0.26),
+    "potted plant": ("Dry Leaves / Biomass", "Dry leaves & foliage", 0.34),
+    "book": ("Dry Leaves / Biomass", "Paper & paper bag", 0.32),
 }
 
-# COCO classes that are non-waste background/subjects (used to suppress false positives)
+# COCO classes that represent humans, vehicles, pets, or indoor furniture/electronics
 COCO_NON_WASTE_CLASSES = {
     "person",
     "car",
@@ -95,6 +125,20 @@ COCO_NON_WASTE_CLASSES = {
     "tv",
     "cat",
     "dog",
+    "cell phone",
+    "dining table",
+    "keyboard",
+    "mouse",
+}
+
+INDOOR_PORTRAIT_ANCHORS = {
+    "laptop",
+    "chair",
+    "couch",
+    "bed",
+    "tv",
+    "dining table",
+    "keyboard",
 }
 
 
@@ -143,6 +187,106 @@ def _compute_containment(inner: Dict[str, int], outer: Dict[str, int]) -> float:
         max(1, (inner["x2"] - inner["x1"]) * (inner["y2"] - inner["y1"]))
     )
     return inter / inner_area
+
+
+def _numpy_nms(
+    boxes_xyxy: np.ndarray,
+    scores: np.ndarray,
+    iou_thresh: float = 0.45,
+) -> List[int]:
+    """Pure NumPy greedy Non-Maximum Suppression on (N, 4) xyxy boxes."""
+    if len(scores) == 0:
+        return []
+    order = np.argsort(-scores)
+    x1 = boxes_xyxy[:, 0]
+    y1 = boxes_xyxy[:, 1]
+    x2 = boxes_xyxy[:, 2]
+    y2 = boxes_xyxy[:, 3]
+    areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
+
+    keep: List[int] = []
+    while order.size > 0:
+        idx = int(order[0])
+        keep.append(idx)
+        if order.size == 1:
+            break
+        rest = order[1:]
+        xx1 = np.maximum(x1[idx], x1[rest])
+        yy1 = np.maximum(y1[idx], y1[rest])
+        xx2 = np.minimum(x2[idx], x2[rest])
+        yy2 = np.minimum(y2[idx], y2[rest])
+        inter = np.maximum(0.0, xx2 - xx1) * np.maximum(0.0, yy2 - yy1)
+        union = np.maximum(1e-6, areas[idx] + areas[rest] - inter)
+        iou = inter / union
+        order = rest[iou <= iou_thresh]
+    return keep
+
+
+def _extract_connected_components(
+    mask: np.ndarray,
+    total_area: float,
+    min_area_ratio: float,
+    max_area_ratio: float,
+    img_width: int,
+    img_height: int,
+    min_y_ratio: float = 0.0,
+    min_fill_ratio: float = 0.0,
+    max_aspect: float = 6.0,
+) -> List[Tuple[int, int, int, int, float]]:
+    """Extract bounding boxes from a boolean downsampled mask using pure NumPy + DFS."""
+    grid_h, grid_w = mask.shape
+    scale_x = img_width / float(max(1, grid_w))
+    scale_y = img_height / float(max(1, grid_h))
+    visited = np.zeros_like(mask, dtype=bool)
+    min_box_area = total_area * min_area_ratio
+    max_box_area = total_area * max_area_ratio
+    min_y_px = int(img_height * min_y_ratio)
+    candidates: List[Tuple[int, int, int, int, float]] = []
+
+    ys, xs = np.nonzero(mask)
+    for sy_raw, sx_raw in zip(ys.tolist(), xs.tolist()):
+        if visited[sy_raw, sx_raw]:
+            continue
+        stack = [(sy_raw, sx_raw)]
+        visited[sy_raw, sx_raw] = True
+        min_x = max_x = sx_raw
+        min_y = max_y = sy_raw
+        pixel_count = 0
+        while stack:
+            cy, cx = stack.pop()
+            pixel_count += 1
+            if cx < min_x:
+                min_x = cx
+            if cx > max_x:
+                max_x = cx
+            if cy < min_y:
+                min_y = cy
+            if cy > max_y:
+                max_y = cy
+            for ny in range(max(0, cy - 1), min(grid_h, cy + 2)):
+                for nx in range(max(0, cx - 1), min(grid_w, cx + 2)):
+                    if mask[ny, nx] and not visited[ny, nx]:
+                        visited[ny, nx] = True
+                        stack.append((ny, nx))
+
+        grid_box_area = max(1, (max_x - min_x + 1) * (max_y - min_y + 1))
+        if min_fill_ratio > 0.0 and (pixel_count / float(grid_box_area)) < min_fill_ratio:
+            continue
+
+        x1 = max(0, int(min_x * scale_x))
+        y1 = max(0, int(min_y * scale_y))
+        x2 = min(img_width, int((max_x + 1) * scale_x))
+        y2 = min(img_height, int((max_y + 1) * scale_y))
+        bw = max(1, x2 - x1)
+        bh = max(1, y2 - y1)
+        if max(bw, bh) / float(min(bw, bh)) > max_aspect:
+            continue
+        box_area = float(bw * bh)
+        if y1 >= min_y_px and min_box_area <= box_area <= max_box_area:
+            candidates.append((x1, y1, x2, y2, box_area))
+
+    candidates.sort(key=lambda item: item[4], reverse=True)
+    return candidates
 
 
 def calculate_severity(
@@ -247,497 +391,948 @@ def calculate_severity(
 
 class VisionEngine:
     """
-    Manages Dual-YOLOv8 model loading (custom TACO best.pt + COCO yolov8n.pt),
-    high-resolution tiled inference, spectral ROI category verification,
-    multi-category waste segmentation, and deterministic OpenCV fallback.
+    Manages Dual-YOLOv8 inference across ONNX Runtime (`best.onnx` + `yolov8n.onnx`)
+    and Ultralytics PyTorch (`best.pt` + `yolov8n.pt`), multi-scale tiled detection,
+    human/indoor portrait suppression, spectral ROI verification, and deterministic
+    analytical fallback when YOLO assets are absent.
     """
 
     def __init__(self) -> None:
         self.model: Any = None
+        self.model_meta: Dict[str, Any] = {}
+        self.custom_backend: Optional[str] = None
         self.coco_model: Any = None
+        self.coco_meta: Dict[str, Any] = {}
+        self.coco_backend: Optional[str] = None
         self.model_path_used: Optional[str] = None
+        self.coco_path_used: Optional[str] = None
         self.device: str = "cpu"
         self.yolo_available: bool = False
         self._initialize_model()
 
-    def _initialize_model(self) -> None:
-        """Attempt to initialize Ultralytics YOLOv8 models if weights and library exist."""
-        try:
-            import torch
+    def _load_onnx_session(self, onnx_path: Path) -> Tuple[Any, Dict[str, Any]]:
+        """Initialize an ONNX Runtime session and extract input dimensions & class names."""
+        opts = ort.SessionOptions()
+        cpu_cnt = os.cpu_count() or 2
+        opts.intra_op_num_threads = max(1, min(4, cpu_cnt))
+        opts.inter_op_num_threads = 1
+        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-            if self.device == "cpu":
-                try:
-                    torch.set_num_threads(2)
-                except Exception:
-                    pass
+        session = ort.InferenceSession(
+            str(onnx_path),
+            sess_options=opts,
+            providers=["CPUExecutionProvider"],
+        )
+        inp = session.get_inputs()[0]
+        input_name = inp.name
+        shape = inp.shape or [1, 3, 640, 640]
+        inp_h = int(shape[2]) if len(shape) >= 4 and isinstance(shape[2], int) else 640
+        inp_w = int(shape[3]) if len(shape) >= 4 and isinstance(shape[3], int) else 640
+
+        names: Dict[int, str] = {}
+        try:
+            meta_map = session.get_modelmeta().custom_metadata_map or {}
+            if "names" in meta_map:
+                parsed = ast.literal_eval(meta_map["names"])
+                if isinstance(parsed, dict):
+                    names = {int(k): str(v) for k, v in parsed.items()}
+                elif isinstance(parsed, list):
+                    names = {idx: str(v) for idx, v in enumerate(parsed)}
         except Exception:
-            self.device = "cpu"
+            names = {}
 
-        try:
-            from ultralytics import YOLO
-        except Exception as exc:
-            logger.info(
-                "Ultralytics YOLOv8 not installed (%s). Using OpenCV Analytical Fallback Mode.",
-                exc,
-            )
-            self.yolo_available = False
-            return
+        return session, {
+            "input_name": input_name,
+            "input_hw": (inp_h, inp_w),
+            "names": names,
+        }
+
+    def _unique_existing_paths(self, candidates: List[Path]) -> List[Path]:
+        seen: set[str] = set()
+        out: List[Path] = []
+        for c in candidates:
+            try:
+                res = str(c.resolve())
+            except Exception:
+                res = str(c)
+            if res not in seen:
+                seen.add(res)
+                out.append(c)
+        return out
+
+    def _initialize_model(self) -> None:
+        """Load ONNX Runtime models first (serverless-safe), with PyTorch fallback."""
+        self.model = None
+        self.coco_model = None
+        self.custom_backend = None
+        self.coco_backend = None
+        self.model_path_used = None
+        self.coco_path_used = None
+        self.yolo_available = False
+        self.device = "cpu"
 
         repo_root = BACKEND_DIR.parent
-        candidates = [
-            DEFAULT_CUSTOM_MODEL,
-            BACKEND_DIR / "models" / "best.pt",
-            repo_root / "weights" / "best.pt",
-            repo_root / "terrasight-ai" / "weights" / "best.pt",
-            BACKEND_DIR / "weights" / "best.pt",
-            DEFAULT_BASE_MODEL,
+        env_model_raw = os.getenv("MODEL_PATH", "").strip()
+        custom_onnx_candidates: List[Path] = []
+        custom_pt_candidates: List[Path] = []
+
+        if env_model_raw:
+            p = BACKEND_DIR / env_model_raw
+            if p.suffix.lower() == ".onnx":
+                custom_onnx_candidates.append(p)
+            elif p.suffix.lower() == ".pt":
+                custom_pt_candidates.append(p)
+                custom_onnx_candidates.append(p.with_suffix(".onnx"))
+
+        custom_onnx_candidates.extend(
+            [
+                BACKEND_DIR / "models" / "best.onnx",
+                repo_root / "api" / "models" / "best.onnx",
+                repo_root / "backend" / "models" / "best.onnx",
+                repo_root / "weights" / "best.onnx",
+            ]
+        )
+        custom_pt_candidates.extend(
+            [
+                BACKEND_DIR / "models" / "best.pt",
+                repo_root / "backend" / "models" / "best.pt",
+                repo_root / "weights" / "best.pt",
+                repo_root / "terrasight-ai" / "weights" / "best.pt",
+            ]
+        )
+
+        coco_onnx_candidates = [
+            BACKEND_DIR / "models" / "yolov8n.onnx",
+            BACKEND_DIR / "yolov8n.onnx",
+            repo_root / "api" / "models" / "yolov8n.onnx",
+            repo_root / "backend" / "models" / "yolov8n.onnx",
+        ]
+        coco_pt_candidates = [
+            BACKEND_DIR / "yolov8n.pt",
+            BACKEND_DIR / "models" / "yolov8n.pt",
             repo_root / "yolov8n.pt",
         ]
 
-        seen_paths: set[str] = set()
-        unique_candidates: List[Path] = []
-        for c in candidates:
-            resolved_str = str(c.resolve())
-            if resolved_str not in seen_paths:
-                seen_paths.add(resolved_str)
-                unique_candidates.append(c)
+        # Check whether a local .pt checkpoint is noticeably newer than exported .onnx
+        best_onnx = next(
+            (p for p in self._unique_existing_paths(custom_onnx_candidates) if p.exists() and p.is_file() and p.stat().st_size > 1_000_000),
+            None,
+        )
+        best_pt = next(
+            (p for p in self._unique_existing_paths(custom_pt_candidates) if p.exists() and p.is_file() and p.stat().st_size > 1_000_000),
+            None,
+        )
+        pt_is_newer = False
+        if best_onnx is not None and best_pt is not None:
+            if best_pt.stat().st_mtime > best_onnx.stat().st_mtime + 10.0:
+                pt_is_newer = True
 
-        for candidate in unique_candidates:
-            if candidate.exists() and candidate.is_file() and candidate.stat().st_size > 1_000_000:
+        # 1. Try ONNX Runtime first (unless a significantly newer local .pt exists)
+        if HAS_ORT and ort is not None and best_onnx is not None and not pt_is_newer:
+            try:
+                sess, meta = self._load_onnx_session(best_onnx)
+                self.model = sess
+                self.model_meta = meta
+                self.custom_backend = "onnx"
+                self.model_path_used = str(best_onnx)
+                self.yolo_available = True
+                logger.info("Loaded custom YOLOv8 ONNX model from %s", best_onnx)
+            except Exception as exc:
+                logger.warning("Failed to load ONNX model %s: %s", best_onnx, exc)
+
+        # 2. Load COCO auxiliary ONNX model
+        if HAS_ORT and ort is not None:
+            coco_onnx = next(
+                (p for p in self._unique_existing_paths(coco_onnx_candidates) if p.exists() and p.is_file() and p.stat().st_size > 1_000_000),
+                None,
+            )
+            if coco_onnx is not None:
                 try:
-                    self.model = YOLO(str(candidate))
-                    self.model_path_used = str(candidate)
+                    csess, cmeta = self._load_onnx_session(coco_onnx)
+                    if not cmeta.get("names"):
+                        cmeta["names"] = {i: n for i, n in enumerate(COCO_CLASS_NAMES)}
+                    self.coco_model = csess
+                    self.coco_meta = cmeta
+                    self.coco_backend = "onnx"
+                    self.coco_path_used = str(coco_onnx)
                     self.yolo_available = True
-                    logger.info(
-                        "Loaded primary YOLOv8 model from %s on device=%s",
-                        candidate,
-                        self.device,
-                    )
-                    break
+                    logger.info("Loaded COCO YOLOv8n ONNX model from %s", coco_onnx)
                 except Exception as exc:
-                    logger.warning(
-                        "Could not load YOLOv8 weights at %s (%s). Trying next candidate...",
-                        candidate,
+                    logger.warning("Failed to load COCO ONNX model %s: %s", coco_onnx, exc)
+
+        # 3. PyTorch / Ultralytics fallback (local backend when ONNX not used)
+        if self.model is None or self.coco_model is None:
+            try:
+                import torch
+                from ultralytics import YOLO
+
+                self.device = "cuda" if torch.cuda.is_available() else "cpu"
+                if self.device == "cpu":
+                    try:
+                        torch.set_num_threads(max(1, min(4, os.cpu_count() or 2)))
+                    except Exception:
+                        pass
+
+                if self.model is None and best_pt is not None:
+                    self.model = YOLO(str(best_pt))
+                    self.model_meta = {"names": getattr(self.model, "names", {})}
+                    self.custom_backend = "pt"
+                    self.model_path_used = str(best_pt)
+                    self.yolo_available = True
+                    logger.info("Loaded custom YOLOv8 PyTorch weights from %s", best_pt)
+
+                if self.coco_model is None:
+                    coco_pt = next(
+                        (p for p in self._unique_existing_paths(coco_pt_candidates) if p.exists() and p.is_file() and p.stat().st_size > 1_000_000),
+                        None,
+                    )
+                    if coco_pt is not None:
+                        self.coco_model = YOLO(str(coco_pt))
+                        self.coco_meta = {
+                            "names": getattr(
+                                self.coco_model,
+                                "names",
+                                {i: n for i, n in enumerate(COCO_CLASS_NAMES)},
+                            )
+                        }
+                        self.coco_backend = "pt"
+                        self.coco_path_used = str(coco_pt)
+                        self.yolo_available = True
+                        logger.info("Loaded COCO YOLOv8n PyTorch weights from %s", coco_pt)
+            except Exception as exc:
+                if not self.yolo_available:
+                    logger.info(
+                        "YOLO runtimes unavailable (%s). Analytical Fallback enabled.",
                         exc,
                     )
 
-        # Also load official COCO yolov8n.pt as auxiliary detector for bottles, bananas/food, & person filtering
-        base_candidates = [
-            DEFAULT_BASE_MODEL,
-            repo_root / "yolov8n.pt",
-        ]
-        for base_cand in base_candidates:
-            if base_cand.exists() and base_cand.is_file() and base_cand.stat().st_size > 1_000_000:
-                try:
-                    if self.model_path_used and Path(self.model_path_used).resolve() == base_cand.resolve():
-                        self.coco_model = self.model
-                    else:
-                        self.coco_model = YOLO(str(base_cand))
-                    break
-                except Exception:
-                    pass
+        # If only COCO loaded and no custom model yet, promote COCO as fallback primary
+        if self.model is None and self.coco_model is not None and not self.yolo_available:
+            self.yolo_available = True
 
-        if not self.yolo_available:
-            try:
-                self.model = YOLO("yolov8n.pt")
-                self.coco_model = self.model
-                self.model_path_used = "yolov8n.pt"
-                self.yolo_available = True
-                logger.info("Loaded official YOLOv8n base model on device=%s", self.device)
-            except Exception as exc:
-                logger.info(
-                    "No valid local YOLO weight file loaded (%s). Using OpenCV Analytical Fallback Mode.",
-                    exc,
-                )
-                self.model = None
-                self.yolo_available = False
+    def reload_models(self) -> Dict[str, Any]:
+        """Re-initialize models from disk (useful after training or ONNX export)."""
+        self._initialize_model()
+        return self.get_status()
 
     def get_status(self) -> Dict[str, Any]:
         """Return current vision engine status for system health & officer dashboard."""
+        loaded_parts = []
+        if self.model_path_used:
+            loaded_parts.append(Path(self.model_path_used).name)
+        if self.coco_path_used:
+            loaded_parts.append(Path(self.coco_path_used).name)
+
+        if self.custom_backend == "onnx" or self.coco_backend == "onnx":
+            runtime_label = "ONNX Runtime"
+        elif self.custom_backend == "pt" or self.coco_backend == "pt":
+            runtime_label = "Ultralytics PyTorch"
+        else:
+            runtime_label = "Analytical"
+
         return {
             "ai_engine": "Online" if self.yolo_available else "Fallback Mode",
             "inference_mode": "YOLOv8" if self.yolo_available else "Analytical Fallback",
+            "runtime": runtime_label,
             "device": self.device,
-            "model_path": self.model_path_used,
+            "model_path": self.model_path_used or self.coco_path_used,
+            "weights_loaded": " + ".join(loaded_parts) if loaded_parts else "Analytical Fallback",
             "categories": FUNCTIONAL_CATEGORIES,
+            "granular_classes": GRANULAR_TACO_CLASSES,
         }
 
-    def _refine_category_from_roi(
+    def _predict_onnx(
+        self,
+        session: Any,
+        meta: Dict[str, Any],
+        pil_crop: Image.Image,
+        conf_thresh: float,
+        iou_thresh: float = 0.45,
+        class_agnostic_nms: bool = False,
+    ) -> List[Tuple[int, str, float, int, int, int, int]]:
+        """Run single YOLO ONNX forward pass with Pillow letterbox & pure-NumPy NMS."""
+        crop_w, crop_h = pil_crop.size
+        inp_h, inp_w = meta.get("input_hw", (640, 640))
+        scale = min(inp_w / float(max(1, crop_w)), inp_h / float(max(1, crop_h)))
+        new_w = max(1, int(round(crop_w * scale)))
+        new_h = max(1, int(round(crop_h * scale)))
+        dw = (inp_w - new_w) / 2.0
+        dh = (inp_h - new_h) / 2.0
+        pad_x = int(round(dw - 0.1))
+        pad_y = int(round(dh - 0.1))
+
+        resized = pil_crop.resize((new_w, new_h), Image.Resampling.BILINEAR)
+        canvas = Image.new("RGB", (inp_w, inp_h), (114, 114, 114))
+        canvas.paste(resized, (pad_x, pad_y))
+
+        tensor = np.asarray(canvas, dtype=np.float32) * (1.0 / 255.0)
+        tensor = np.ascontiguousarray(np.transpose(tensor, (2, 0, 1))[None, ...])
+
+        input_name = meta.get("input_name") or session.get_inputs()[0].name
+        outputs = session.run(None, {input_name: tensor})
+        raw_out = outputs[0]
+
+        if raw_out.ndim == 3:
+            if raw_out.shape[1] < raw_out.shape[2]:
+                preds = np.transpose(raw_out[0], (1, 0))
+            else:
+                preds = raw_out[0]
+        else:
+            preds = raw_out
+
+        if preds.shape[1] <= 4:
+            return []
+
+        nc = preds.shape[1] - 4
+        cls_scores = preds[:, 4:]
+        cls_ids = np.argmax(cls_scores, axis=1)
+        scores = cls_scores[np.arange(len(preds)), cls_ids]
+
+        mask = scores >= conf_thresh
+        if not np.any(mask):
+            return []
+
+        boxes_xywh = preds[mask, :4]
+        filt_scores = scores[mask]
+        filt_cls = cls_ids[mask]
+
+        cx = boxes_xywh[:, 0]
+        cy = boxes_xywh[:, 1]
+        bw = boxes_xywh[:, 2]
+        bh = boxes_xywh[:, 3]
+
+        x1 = np.clip((cx - bw * 0.5 - pad_x) / scale, 0.0, float(crop_w))
+        y1 = np.clip((cy - bh * 0.5 - pad_y) / scale, 0.0, float(crop_h))
+        x2 = np.clip((cx + bw * 0.5 - pad_x) / scale, 0.0, float(crop_w))
+        y2 = np.clip((cy + bh * 0.5 - pad_y) / scale, 0.0, float(crop_h))
+        xyxy = np.stack([x1, y1, x2, y2], axis=1)
+
+        if class_agnostic_nms:
+            keep_indices = _numpy_nms(xyxy, filt_scores, iou_thresh=iou_thresh)
+        else:
+            keep_indices = []
+            for unique_cid in np.unique(filt_cls).tolist():
+                c_mask = np.nonzero(filt_cls == unique_cid)[0]
+                kept_local = _numpy_nms(
+                    xyxy[c_mask], filt_scores[c_mask], iou_thresh=iou_thresh
+                )
+                keep_indices.extend(int(c_mask[li]) for li in kept_local)
+            keep_indices.sort(key=lambda idx: float(filt_scores[idx]), reverse=True)
+
+        names_map = meta.get("names") or {}
+        if not names_map:
+            if nc == len(GRANULAR_TACO_CLASSES):
+                names_map = ID_TO_GRANULAR_CATEGORY_MAP
+            elif nc == len(FUNCTIONAL_CATEGORIES):
+                names_map = ID_TO_CATEGORY_MAP
+            elif nc == len(COCO_CLASS_NAMES):
+                names_map = {i: n for i, n in enumerate(COCO_CLASS_NAMES)}
+
+        results: List[Tuple[int, str, float, int, int, int, int]] = []
+        for idx in keep_indices:
+            cid = int(filt_cls[idx])
+            conf = float(filt_scores[idx])
+            bx1 = int(round(float(xyxy[idx, 0])))
+            by1 = int(round(float(xyxy[idx, 1])))
+            bx2 = int(round(float(xyxy[idx, 2])))
+            by2 = int(round(float(xyxy[idx, 3])))
+            if bx2 > bx1 and by2 > by1:
+                raw_name = str(names_map.get(cid, f"Class {cid}"))
+                results.append((cid, raw_name, conf, bx1, by1, bx2, by2))
+        return results
+
+    def _predict_pt(
+        self,
+        model: Any,
+        meta: Dict[str, Any],
+        pil_crop: Image.Image,
+        conf_thresh: float,
+        imgsz: int = 512,
+    ) -> List[Tuple[int, str, float, int, int, int, int]]:
+        """Run Ultralytics PyTorch inference on a Pillow crop."""
+        try:
+            import torch
+
+            ctx = torch.inference_mode()
+        except Exception:
+            from contextlib import nullcontext
+
+            ctx = nullcontext()
+
+        crop_w, crop_h = pil_crop.size
+        with ctx:
+            pt_results = model.predict(
+                source=pil_crop,
+                device=self.device,
+                imgsz=imgsz,
+                conf=conf_thresh,
+                verbose=False,
+            )
+
+        out: List[Tuple[int, str, float, int, int, int, int]] = []
+        for res in pt_results:
+            names_map = getattr(res, "names", None) or meta.get("names") or {}
+            boxes = getattr(res, "boxes", None)
+            if boxes is None:
+                continue
+            for box in boxes:
+                bx1, by1, bx2, by2 = [int(round(v)) for v in box.xyxy[0].tolist()]
+                bx1 = max(0, min(crop_w, bx1))
+                by1 = max(0, min(crop_h, by1))
+                bx2 = max(0, min(crop_w, bx2))
+                by2 = max(0, min(crop_h, by2))
+                if bx2 <= bx1 or by2 <= by1:
+                    continue
+                conf = float(box.conf[0].item())
+                cid = int(box.cls[0].item())
+                raw_name = (
+                    str(names_map.get(cid, ID_TO_CATEGORY_MAP.get(cid, "Plastic Waste")))
+                    if isinstance(names_map, dict)
+                    else str(names_map[cid] if cid < len(names_map) else cid)
+                )
+                out.append((cid, raw_name, conf, bx1, by1, bx2, by2))
+        return out
+
+    def _infer_crop(
+        self,
+        backend: Optional[str],
+        model_obj: Any,
+        meta: Dict[str, Any],
+        pil_crop: Image.Image,
+        conf_thresh: float,
+        imgsz: int = 512,
+        class_agnostic_nms: bool = False,
+    ) -> List[Tuple[int, str, float, int, int, int, int]]:
+        if model_obj is None or backend is None:
+            return []
+        if backend == "onnx":
+            return self._predict_onnx(
+                model_obj,
+                meta,
+                pil_crop,
+                conf_thresh=conf_thresh,
+                class_agnostic_nms=class_agnostic_nms,
+            )
+        return self._predict_pt(
+            model_obj,
+            meta,
+            pil_crop,
+            conf_thresh=conf_thresh,
+            imgsz=imgsz,
+        )
+
+    def _compute_boxes_union_ratio(
+        self,
+        boxes: List[Dict[str, int]],
+        width: int,
+        height: int,
+    ) -> float:
+        """Compute exact union area fraction on a compact raster grid."""
+        if not boxes or width <= 0 or height <= 0:
+            return 0.0
+        gw, gh = min(128, width), min(96, height)
+        mask = np.zeros((gh, gw), dtype=bool)
+        sx = gw / float(width)
+        sy = gh / float(height)
+        for b in boxes:
+            x1 = max(0, min(gw - 1, int(b["x1"] * sx)))
+            y1 = max(0, min(gh - 1, int(b["y1"] * sy)))
+            x2 = max(x1 + 1, min(gw, int(np.ceil(b["x2"] * sx))))
+            y2 = max(y1 + 1, min(gh, int(np.ceil(b["y2"] * sy))))
+            mask[y1:y2, x1:x2] = True
+        return float(np.mean(mask))
+
+    def _refine_detection_from_roi(
         self,
         roi_hsv: np.ndarray,
         initial_category: str,
+        initial_subclass: str,
         confidence: float,
-    ) -> Tuple[str, float]:
+        is_granular_model: bool,
+    ) -> Tuple[str, str, float]:
         """
-        Inspect HSV pixel distribution inside a bounding box to correct TACO class-0
-        (`Plastic Waste`) bias when the box actually covers Organic Waste (yellow/orange/amber
-        fruit peels, food scraps) or Dry Leaves / Biomass (plant leaves, brown cardboard).
+        Inspect HSV pixel statistics inside a detected box to upgrade coarse or
+        ambiguous labels (`Mixed litter` / legacy `Plastic Waste`) when obvious
+        organic food peels or plant foliage occupy the bounding box.
         """
         if roi_hsv.size == 0:
-            return initial_category, confidence
+            return initial_category, initial_subclass, confidence
+
+        # Trust explicit high-confidence granular item predictions directly
+        high_trust_subclasses = {
+            "Plastic bottle",
+            "Glass bottle & jar",
+            "Drink & metal can",
+            "Disposable cup",
+            "Styrofoam piece",
+            "Cardboard carton",
+            "Paper & paper bag",
+            "Cigarette",
+            "Food & takeout container",
+            "Bottle cap, straw & lid",
+            "Plastic wrapper",
+        }
+        if is_granular_model and initial_subclass in high_trust_subclasses and confidence >= 0.24:
+            return initial_category, initial_subclass, confidence
 
         h = roi_hsv[:, :, 0].astype(np.float32)
         s = roi_hsv[:, :, 1].astype(np.float32)
         v = roi_hsv[:, :, 2].astype(np.float32)
         total_px = float(h.size)
 
-        # Strong synthetic plastic signals (blue polyethylene, bright red wrapper, white styrofoam, black bag, clear PET bottle)
         blue_plastic_ratio = float(np.sum((h >= 95) & (h <= 135) & (s >= 65) & (v >= 50))) / total_px
         white_foam_ratio = float(np.sum((s <= 45) & (v >= 190))) / total_px
         black_bag_ratio = float(np.sum((v <= 55) & (s <= 95))) / total_px
-        clear_pet_ratio = float(np.sum((s >= 20) & (s <= 95) & (v >= 145) & (v <= 235))) / total_px
+        if blue_plastic_ratio > 0.22 or white_foam_ratio > 0.34 or black_bag_ratio > 0.42:
+            if initial_subclass in ("Mixed litter", "Plastic Waste") and black_bag_ratio > 0.42:
+                return "Plastic Waste", "Plastic bag & film", max(confidence, 0.72)
+            return initial_category, initial_subclass, confidence
 
-        if blue_plastic_ratio > 0.20 or white_foam_ratio > 0.30 or black_bag_ratio > 0.40:
-            return "Plastic Waste", max(confidence, 0.76)
-
-        if clear_pet_ratio > 0.42 and confidence >= 0.22:
-            return "Plastic Waste", max(confidence, 0.84)
-
-        # Organic food / fruit peel signals (warm yellow/amber/orange high saturation)
-        organic_mask = ((h >= 15) & (h <= 26) & (s >= 135) & (v >= 100)) | (
-            (h >= 6) & (h < 15) & (s >= 145) & (v >= 105)
+        organic_mask = ((h >= 15) & (h <= 26) & (s >= 150) & (v >= 110)) | (
+            (h >= 7) & (h < 15) & (s >= 165) & (v >= 115)
         )
         organic_ratio = float(np.sum(organic_mask)) / total_px
 
-        # Dry Leaves / Biomass signals (yellow-green/olive chlorophyll H:26..48 or brown cardboard H:10..22)
-        leaf_mask = (h >= 26) & (h <= 48) & (s >= 70) & (v >= 55) & (v <= 185)
-        cardboard_mask = (h >= 10) & (h <= 22) & (s >= 50) & (s < 120) & (v >= 90) & (v <= 195)
-        biomass_ratio = float(np.sum(leaf_mask | cardboard_mask)) / total_px
+        leaf_mask = (h >= 21) & (h <= 35) & (s >= 68) & (s <= 148) & (v >= 48) & (v <= 165)
+        leaf_ratio = float(np.sum(leaf_mask)) / total_px
 
-        if organic_ratio >= 0.22 and organic_ratio >= biomass_ratio * 0.90:
-            return "Organic Waste", round(max(confidence, min(0.91, 0.64 + organic_ratio)), 2)
+        if (
+            initial_subclass in ("Mixed litter", "Plastic Waste", "Plastic bag & film", "Food & organic waste")
+            and organic_ratio >= 0.34
+            and organic_ratio >= leaf_ratio
+        ):
+            return "Organic Waste", "Food & organic waste", round(min(0.76, max(confidence, confidence + 0.12)), 2)
 
-        if biomass_ratio >= 0.26:
-            return "Dry Leaves / Biomass", round(max(confidence, min(0.89, 0.60 + biomass_ratio)), 2)
+        if (
+            initial_subclass in ("Mixed litter", "Dry Leaves / Biomass", "Dry leaves & foliage")
+            and leaf_ratio >= 0.48
+        ):
+            return "Dry Leaves / Biomass", "Dry leaves & foliage", round(min(0.74, max(confidence, confidence + 0.10)), 2)
 
-        return initial_category, max(confidence, 0.64)
+        return initial_category, initial_subclass, confidence
 
-    def _segment_complementary_waste_regions(
+    def _segment_complementary_waste_numpy(
         self,
-        img_bgr: np.ndarray,
-        img_hsv: np.ndarray,
-        existing_boxes: List[Dict[str, Any]],
+        pil_rgb: Image.Image,
+        existing_dets: List[Dict[str, Any]],
         non_waste_boxes: List[Dict[str, int]],
+        width: int,
+        height: int,
     ) -> List[Dict[str, Any]]:
         """
-        Detect prominent Organic Waste (banana/fruit peels, food scraps),
-        Dry Leaves / Biomass (foliage/plant waste in the pile, cardboard cartons),
-        and Clear/Plastic containers within the active waste zone that a 10-epoch
-        TACO model may miss.
+        Pure-NumPy + Pillow spectral segmentation for missed Organic food scraps
+        and Dry Leaves inside ALREADY-CONFIRMED multi-object waste piles.
+        Requires >= 4 YOLO detections so clean tabletop/isolated shots never trigger false positives.
         """
-        height, width = img_bgr.shape[:2]
-        total_area = float(width * height)
-        if total_area <= 0:
+        if len(existing_dets) < 4 or width <= 0 or height <= 0:
             return []
 
-        # Active foreground waste pile zone
-        y_min_zone = int(height * 0.34)
-        y_max_zone = int(height * 0.92)
-        x_min_zone = int(width * 0.04)
-        x_max_zone = int(width * 0.78)
+        total_area = float(width * height)
+        # Compute expanded waste-pile bounding envelope from confirmed YOLO boxes
+        xs1 = [d["bbox"]["x1"] for d in existing_dets]
+        ys1 = [d["bbox"]["y1"] for d in existing_dets]
+        xs2 = [d["bbox"]["x2"] for d in existing_dets]
+        ys2 = [d["bbox"]["y2"] for d in existing_dets]
+        pad_x = int(width * 0.09)
+        pad_y = int(height * 0.09)
+        pile_x1 = max(0, min(xs1) - pad_x)
+        pile_y1 = max(int(height * 0.20), min(ys1) - pad_y)
+        pile_x2 = min(width, max(xs2) + pad_x)
+        pile_y2 = min(height, max(ys2) + pad_y)
 
-        zone_mask = np.zeros((height, width), dtype=np.uint8)
-        zone_mask[y_min_zone:y_max_zone, x_min_zone:x_max_zone] = 255
+        grid_w = min(112, max(32, width // 6))
+        grid_h = min(84, max(24, height // 6))
+        small_rgb = pil_rgb.resize((grid_w, grid_h), Image.Resampling.BILINEAR)
+        hsv = np.asarray(small_rgb.convert("HSV"), dtype=np.uint8).copy()
+        hsv[:, :, 0] = (hsv[:, :, 0].astype(np.uint16) * 180 // 256).astype(np.uint8)
 
-        h = img_hsv[:, :, 0]
-        s = img_hsv[:, :, 1]
-        v = img_hsv[:, :, 2]
+        h = hsv[:, :, 0]
+        s = hsv[:, :, 1]
+        v = hsv[:, :, 2]
+
+        # Restrict to waste pile envelope on grid
+        gz = np.zeros((grid_h, grid_w), dtype=bool)
+        gx1 = max(0, int(pile_x1 * grid_w / float(width)))
+        gy1 = max(0, int(pile_y1 * grid_h / float(height)))
+        gx2 = min(grid_w, int(np.ceil(pile_x2 * grid_w / float(width))))
+        gy2 = min(grid_h, int(np.ceil(pile_y2 * grid_h / float(height))))
+        gz[gy1:gy2, gx1:gx2] = True
 
         supplemental: List[Dict[str, Any]] = []
 
-        # 1. Organic Waste Segmentation (banana peels, citrus peels, decaying food clusters)
-        organic_raw = np.where(
-            (zone_mask > 0)
-            & (
-                ((h >= 16) & (h <= 25) & (s >= 142) & (v >= 115) & (v <= 245))
-                | ((h >= 8) & (h < 16) & (s >= 158) & (v >= 120) & (v <= 240))
-            ),
-            255,
-            0,
-        ).astype(np.uint8)
+        def _count_nearby_yolo_trash(box_dict: Dict[str, int], max_gap_frac: float = 0.06) -> int:
+            """Count distinct confirmed YOLO trash detections adjacent to this region."""
+            gx = width * max_gap_frac
+            gy = height * max_gap_frac
+            hits = 0
+            for eb in existing_dets:
+                kb = eb["bbox"]
+                dx = max(0, max(box_dict["x1"] - kb["x2"], kb["x1"] - box_dict["x2"]))
+                dy = max(0, max(box_dict["y1"] - kb["y2"], kb["y1"] - box_dict["y2"]))
+                if dx <= gx and dy <= gy:
+                    hits += 1
+            return hits
 
-        kernel_org = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        organic_closed = cv2.morphologyEx(organic_raw, cv2.MORPH_CLOSE, kernel_org, iterations=2)
-        organic_closed = cv2.morphologyEx(organic_closed, cv2.MORPH_OPEN, kernel_org, iterations=1)
-
-        cnts_org, _ = cv2.findContours(organic_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        org_candidates: List[Tuple[int, int, int, int, float]] = []
-        for cnt in cnts_org:
-            x, y, bw, bh = cv2.boundingRect(cnt)
-            b_area = float(bw * bh)
-            if total_area * 0.0022 <= b_area <= total_area * 0.09 and y >= int(height * 0.38):
-                org_candidates.append((x, y, x + bw, y + bh, b_area))
-
-        org_candidates.sort(key=lambda item: item[4], reverse=True)
-        for x1, y1, x2, y2, b_area in org_candidates[:3]:
+        # 1. Organic food peels / warm organic clusters inside confirmed waste pile
+        org_mask = gz & (
+            ((h >= 15) & (h <= 25) & (s >= 166) & (v >= 115) & (v <= 245))
+            | ((h >= 8) & (h < 15) & (s >= 176) & (v >= 120) & (v <= 240))
+        )
+        org_cands = _extract_connected_components(
+            org_mask,
+            total_area=total_area,
+            min_area_ratio=0.0028,
+            max_area_ratio=0.075,
+            img_width=width,
+            img_height=height,
+            min_y_ratio=0.24,
+            min_fill_ratio=0.22,
+            max_aspect=3.6,
+        )
+        for x1, y1, x2, y2, b_area in org_cands[:3]:
             cand_box = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
-            if any(_compute_containment(cand_box, nw) > 0.50 for nw in non_waste_boxes):
+            if _count_nearby_yolo_trash(cand_box, max_gap_frac=0.05) < 1:
+                continue
+            if any(_compute_containment(cand_box, nw) > 0.45 for nw in non_waste_boxes):
                 continue
             if any(
                 _compute_iou(cand_box, eb["bbox"]) > 0.28 and eb["class_name"] == "Organic Waste"
-                for eb in existing_boxes + supplemental
+                for eb in existing_dets + supplemental
             ):
                 continue
             supplemental.append(
                 {
                     "class_name": "Organic Waste",
-                    "confidence": round(min(0.91, 0.76 + (b_area / total_area) * 3.0), 2),
+                    "subclass": "Food & organic waste",
+                    "confidence": round(min(0.87, 0.68 + (b_area / total_area) * 3.0), 2),
                     "bbox": cand_box,
                     "area_ratio": round(b_area / total_area, 4),
                 }
             )
 
-        # 2. Dry Leaves / Biomass Segmentation (yellow-green/olive plant leaves H:26..46 in pile + cardboard)
-        # Excludes painted cyan-green dumpsters (which have H ~ 58..75)
-        pile_zone = np.zeros((height, width), dtype=np.uint8)
-        pile_zone[int(height * 0.36) : int(height * 0.88), int(width * 0.12) : int(width * 0.58)] = 255
-
-        leaves_raw = np.where(
-            (pile_zone > 0)
-            & (h >= 26)
-            & (h <= 46)
-            & (s >= 82)
-            & (v >= 55)
-            & (v <= 178),
-            255,
-            0,
-        ).astype(np.uint8)
-
-        kernel_bio = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
-        leaves_closed = cv2.morphologyEx(leaves_raw, cv2.MORPH_CLOSE, kernel_bio, iterations=2)
-        leaves_closed = cv2.morphologyEx(leaves_closed, cv2.MORPH_OPEN, kernel_bio, iterations=1)
-
-        cnts_bio, _ = cv2.findContours(leaves_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        bio_candidates: List[Tuple[int, int, int, int, float]] = []
-        for cnt in cnts_bio:
-            x, y, bw, bh = cv2.boundingRect(cnt)
-            b_area = float(bw * bh)
-            if total_area * 0.0035 <= b_area <= total_area * 0.10:
-                bio_candidates.append((x, y, x + bw, y + bh, b_area))
-
-        bio_candidates.sort(key=lambda item: item[4], reverse=True)
-        for x1, y1, x2, y2, b_area in bio_candidates[:3]:
-            cand_box = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
-            if any(_compute_containment(cand_box, nw) > 0.50 for nw in non_waste_boxes):
-                continue
-            if any(
-                _compute_iou(cand_box, eb["bbox"]) > 0.28
-                and eb["class_name"] == "Dry Leaves / Biomass"
-                for eb in existing_boxes + supplemental
-            ):
-                continue
-            supplemental.append(
-                {
-                    "class_name": "Dry Leaves / Biomass",
-                    "confidence": round(min(0.89, 0.74 + (b_area / total_area) * 3.0), 2),
-                    "bbox": cand_box,
-                    "area_ratio": round(b_area / total_area, 4),
-                }
+        # 2. Dry leaves & foliage clusters strictly inside dense pile (excludes green trees/weeds)
+        if len(existing_dets) >= 5:
+            leaf_mask = gz & (h >= 21) & (h <= 34) & (s >= 68) & (s <= 148) & (v >= 48) & (v <= 165)
+            leaf_cands = _extract_connected_components(
+                leaf_mask,
+                total_area=total_area,
+                min_area_ratio=0.0038,
+                max_area_ratio=0.036,
+                img_width=width,
+                img_height=height,
+                min_y_ratio=0.45,
+                min_fill_ratio=0.28,
+                max_aspect=2.6,
             )
-
-        # 3. Black Polyethylene Trash Bags (dark low-value, low-saturation glossy bags in foreground pile)
-        bag_zone = np.zeros((height, width), dtype=np.uint8)
-        bag_zone[int(height * 0.22) : int(height * 0.78), int(width * 0.01) : int(width * 0.80)] = 255
-
-        black_bag_raw = np.where(
-            (bag_zone > 0) & (v <= 58) & (s <= 95),
-            255,
-            0,
-        ).astype(np.uint8)
-
-        kernel_bag = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13))
-        black_bag_closed = cv2.morphologyEx(black_bag_raw, cv2.MORPH_CLOSE, kernel_bag, iterations=2)
-        black_bag_closed = cv2.morphologyEx(black_bag_closed, cv2.MORPH_OPEN, kernel_bag, iterations=1)
-
-        cnts_bag, _ = cv2.findContours(
-            black_bag_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        bag_candidates: List[Tuple[int, int, int, int, float]] = []
-        for cnt in cnts_bag:
-            x, y, bw, bh = cv2.boundingRect(cnt)
-            b_area = float(bw * bh)
-            if total_area * 0.012 <= b_area <= total_area * 0.22:
-                bag_candidates.append((x, y, x + bw, y + bh, b_area))
-
-        bag_candidates.sort(key=lambda item: item[4], reverse=True)
-        for x1, y1, x2, y2, b_area in bag_candidates[:3]:
-            cand_box = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
-            if any(_compute_containment(cand_box, nw) > 0.50 for nw in non_waste_boxes):
-                continue
-            if any(_compute_iou(cand_box, eb["bbox"]) > 0.32 for eb in existing_boxes + supplemental):
-                continue
-            supplemental.append(
-                {
-                    "class_name": "Plastic Waste",
-                    "confidence": round(min(0.92, 0.78 + (b_area / total_area) * 1.5), 2),
-                    "bbox": cand_box,
-                    "area_ratio": round(b_area / total_area, 4),
-                }
-            )
+            for x1, y1, x2, y2, b_area in leaf_cands[:2]:
+                cand_box = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+                if _count_nearby_yolo_trash(cand_box, max_gap_frac=0.035) < 2:
+                    continue
+                if any(_compute_containment(cand_box, nw) > 0.45 for nw in non_waste_boxes):
+                    continue
+                if any(
+                    _compute_iou(cand_box, eb["bbox"]) > 0.28
+                    and eb["class_name"] == "Dry Leaves / Biomass"
+                    for eb in existing_dets + supplemental
+                ):
+                    continue
+                supplemental.append(
+                    {
+                        "class_name": "Dry Leaves / Biomass",
+                        "subclass": "Dry leaves & foliage",
+                        "confidence": round(min(0.85, 0.66 + (b_area / total_area) * 3.0), 2),
+                        "bbox": cand_box,
+                        "area_ratio": round(b_area / total_area, 4),
+                    }
+                )
 
         return supplemental
 
     def _run_hybrid_yolo_inference(
-        self, img_bgr: np.ndarray
-    ) -> List[Dict[str, Any]]:
+        self, pil_img: Image.Image
+    ) -> Tuple[List[Dict[str, Any]], bool]:
         """
-        Execute multi-scale & tiled inference across custom TACO YOLOv8 (best.pt)
-        and official COCO YOLOv8n (yolov8n.pt), followed by spectral ROI verification
-        and complementary waste segmentation.
+        Execute multi-pass YOLOv8 ONNX/PyTorch detection:
+          1. COCO context + non-waste gate + identifiable waste objects.
+          2. Custom TACO detector across full frame, foreground region, and 2x2 tiles.
+          3. Spectral ROI refinement & pure-NumPy complementary cluster check.
+        Returns (detections, is_portrait_or_indoor).
         """
-        height, width = img_bgr.shape[:2]
-        total_area = float(width * height)
-        img_hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+        width, height = pil_img.size
+        total_area = float(max(1, width * height))
+
+        # Precompute HSV map once in Pillow -> OpenCV Hue scale [0..179]
+        hsv_full = np.asarray(pil_img.convert("HSV"), dtype=np.uint8).copy()
+        hsv_full[:, :, 0] = (hsv_full[:, :, 0].astype(np.uint16) * 180 // 256).astype(np.uint8)
+
+        non_waste_boxes: List[Dict[str, int]] = []
+        person_boxes: List[Dict[str, int]] = []
+        indoor_boxes: List[Dict[str, int]] = []
+        coco_waste_candidates: List[Dict[str, Any]] = []
+
+        # ------------------------------------------------------------------
+        # PASS 1: COCO Auxiliary Context, Portrait Suppression & Common Items
+        # ------------------------------------------------------------------
+        if self.coco_model is not None and self.coco_backend is not None:
+            try:
+                coco_preds = self._infer_crop(
+                    self.coco_backend,
+                    self.coco_model,
+                    self.coco_meta,
+                    pil_img,
+                    conf_thresh=0.22,
+                    imgsz=640,
+                    class_agnostic_nms=False,
+                )
+                for _, raw_cls, conf, x1, y1, x2, y2 in coco_preds:
+                    cls_low = raw_cls.strip().lower()
+                    box_dict = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+                    box_area = float(max(0, x2 - x1) * max(0, y2 - y1))
+
+                    if cls_low in COCO_NON_WASTE_CLASSES:
+                        non_waste_boxes.append(box_dict)
+                        if cls_low == "person":
+                            person_boxes.append(box_dict)
+                        if cls_low in INDOOR_PORTRAIT_ANCHORS:
+                            indoor_boxes.append(box_dict)
+                        continue
+
+                    if cls_low in COCO_WASTE_CLASS_MAP:
+                        mapped_cat, mapped_sub, min_req_conf = COCO_WASTE_CLASS_MAP[cls_low]
+                        if conf < min_req_conf:
+                            continue
+                        if box_area < total_area * 0.0012 or box_area > total_area * 0.42:
+                            continue
+                        coco_waste_candidates.append(
+                            {
+                                "class_name": mapped_cat,
+                                "subclass": mapped_sub,
+                                "confidence": round(min(0.96, conf + 0.08), 2),
+                                "bbox": box_dict,
+                                "area_ratio": round(box_area / total_area, 4),
+                                "_score_boost": 0.02,
+                            }
+                        )
+            except Exception as exc:
+                logger.warning("Auxiliary COCO YOLO pass error: %s", exc)
+
+        person_union = self._compute_boxes_union_ratio(person_boxes, width, height)
+        indoor_union = self._compute_boxes_union_ratio(indoor_boxes, width, height)
+
+        is_portrait_or_indoor = (person_union >= 0.30) or (
+            person_union >= 0.14 and indoor_union >= 0.04
+        ) or (indoor_union >= 0.20)
+
+        if is_portrait_or_indoor:
+            logger.info(
+                "Suppressed waste pile detection on non-waste/portrait scene (person=%.2f, indoor=%.2f)",
+                person_union,
+                indoor_union,
+            )
+            return [], True
 
         raw_detections: List[Dict[str, Any]] = []
-        non_waste_boxes: List[Dict[str, int]] = []
+        for cw in coco_waste_candidates:
+            if any(_compute_containment(cw["bbox"], nw) > 0.48 for nw in non_waste_boxes):
+                continue
+            raw_detections.append(cw)
 
-        # Step 1: Run Primary Model (best.pt) at 480px resolution (ultra-fast, low memory)
-        if self.model is not None:
-            try:
-                try:
-                    import torch
-                    ctx = torch.inference_mode()
-                except Exception:
-                    from contextlib import nullcontext
-                    ctx = nullcontext()
+        # ------------------------------------------------------------------
+        # PASS 2: Custom Trained TACO YOLOv8n (Full Frame + Foreground + Tiles)
+        # ------------------------------------------------------------------
+        if self.model is not None and self.custom_backend is not None:
+            names_map = self.model_meta.get("names") or {}
+            is_granular = len(names_map) >= 10 or (not names_map)
 
-                with ctx:
-                    full_results = self.model.predict(
-                        source=img_bgr,
-                        device=self.device,
-                        imgsz=480,
-                        conf=0.15,
-                        verbose=False,
+            passes: List[Tuple[Image.Image, int, int, float, float, float]] = [
+                (pil_img, 0, 0, max(0.18, CONFIDENCE_THRESHOLD), 0.03, 0.58)
+            ]
+
+            # Add foreground crop to zoom into dense roadside piles
+            if max(width, height) >= 420:
+                fx1 = int(width * 0.05)
+                fy1 = int(height * 0.22)
+                fx2 = int(width * 0.95)
+                fy2 = int(height * 0.96)
+                if fx2 - fx1 >= 240 and fy2 - fy1 >= 200:
+                    passes.append(
+                        (
+                            pil_img.crop((fx1, fy1, fx2, fy2)),
+                            fx1,
+                            fy1,
+                            max(0.22, CONFIDENCE_THRESHOLD + 0.04),
+                            0.0,
+                            0.45,
+                        )
                     )
-                for res in full_results:
-                    names_map = getattr(res, "names", ID_TO_CATEGORY_MAP)
-                    boxes = getattr(res, "boxes", None)
-                    if boxes is None:
-                        continue
-                    for box in boxes:
-                        xyxy = box.xyxy[0].tolist()
-                        x1, y1, x2, y2 = [int(round(v)) for v in xyxy]
-                        x1, y1 = max(0, x1), max(0, y1)
-                        x2, y2 = min(width, x2), min(height, y2)
-                        box_area = float(max(0, x2 - x1) * max(0, y2 - y1))
 
-                        # Skip tiny noise or overly huge background boxes
-                        if box_area < total_area * 0.0015 or box_area > total_area * 0.42:
+            # Add 2x2 overlapping tiles on large images / multi-scene collages
+            if width >= 540 and height >= 400:
+                tx_mid_r = int(width * 0.56)
+                tx_mid_l = int(width * 0.44)
+                ty_mid_b = int(height * 0.56)
+                ty_mid_t = int(height * 0.44)
+                tile_coords = (
+                    (0, 0, tx_mid_r, ty_mid_b),
+                    (tx_mid_l, 0, width, ty_mid_b),
+                    (0, ty_mid_t, tx_mid_r, height),
+                    (tx_mid_l, ty_mid_t, width, height),
+                )
+                for tx1, ty1, tx2, ty2 in tile_coords:
+                    passes.append(
+                        (
+                            pil_img.crop((tx1, ty1, tx2, ty2)),
+                            tx1,
+                            ty1,
+                            max(0.24, CONFIDENCE_THRESHOLD + 0.06),
+                            0.0,
+                            0.36,
+                        )
+                    )
+
+            for idx_pass, (crop_im, ox, oy, pass_conf, rank_boost, max_area_frac) in enumerate(passes):
+                try:
+                    preds = self._infer_crop(
+                        self.custom_backend,
+                        self.model,
+                        self.model_meta,
+                        crop_im,
+                        conf_thresh=pass_conf,
+                        imgsz=512,
+                        class_agnostic_nms=True,
+                    )
+                    for _, raw_name, conf, x1, y1, x2, y2 in preds:
+                        gx1 = max(0, min(width, x1 + ox))
+                        gy1 = max(0, min(height, y1 + oy))
+                        gx2 = max(0, min(width, x2 + ox))
+                        gy2 = max(0, min(height, y2 + oy))
+                        bw = gx2 - gx1
+                        bh = gy2 - gy1
+                        if bw < 8 or bh < 8:
                             continue
 
-                        bbox_dict = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
-                        conf = float(box.conf[0].item())
-                        cls_id = int(box.cls[0].item())
-                        raw_name = (
-                            names_map.get(cls_id, "Plastic Waste")
-                            if isinstance(names_map, dict)
-                            else str(cls_id)
+                        box_area = float(bw * bh)
+                        area_frac = box_area / total_area
+                        # Drop sub-pixel noise or gigantic background captures
+                        max_allowed = 0.65 if idx_pass == 0 and conf >= 0.40 else max_area_frac
+                        if area_frac < 0.0010 or area_frac > max_allowed:
+                            continue
+
+                        bbox_dict = {"x1": gx1, "y1": gy1, "x2": gx2, "y2": gy2}
+                        # Reject boxes overlapping cars, people, laptops, furniture, etc.
+                        if any(_compute_containment(bbox_dict, nw) > 0.48 for nw in non_waste_boxes):
+                            continue
+
+                        raw_sub = (
+                            map_taco_class_to_granular(raw_name)
+                            if is_granular
+                            else str(raw_name)
                         )
-                        initial_cat = map_taco_class_to_category(str(raw_name))
-                        roi_hsv = img_hsv[y1:y2, x1:x2]
-                        refined_cat, refined_conf = self._refine_category_from_roi(
-                            roi_hsv, initial_cat, conf
+                        initial_cat = map_taco_class_to_category(raw_sub)
+                        roi_hsv = hsv_full[gy1:gy2, gx1:gx2]
+                        refined_cat, refined_sub, refined_conf = self._refine_detection_from_roi(
+                            roi_hsv,
+                            initial_cat,
+                            raw_sub,
+                            conf,
+                            is_granular_model=is_granular,
                         )
 
                         raw_detections.append(
                             {
                                 "class_name": refined_cat,
+                                "subclass": refined_sub,
                                 "confidence": round(refined_conf, 2),
                                 "bbox": bbox_dict,
-                                "area_ratio": round(box_area / total_area, 4),
+                                "area_ratio": round(area_frac, 4),
+                                "_score_boost": rank_boost,
                             }
                         )
-            except Exception as exc:
-                logger.warning("Primary YOLOv8 pass error: %s", exc)
+                except Exception as exc:
+                    logger.warning("TACO pass %d error: %s", idx_pass, exc)
 
-        # Step 2: Fallback to COCO model only if primary model detected nothing
-        if not raw_detections and self.coco_model is not None and self.coco_model is not self.model:
-            try:
-                try:
-                    import torch
-                    ctx = torch.inference_mode()
-                except Exception:
-                    from contextlib import nullcontext
-                    ctx = nullcontext()
-
-                with ctx:
-                    coco_results = self.coco_model.predict(
-                        source=img_bgr,
-                        device=self.device,
-                        imgsz=480,
-                        conf=0.18,
-                        verbose=False,
-                    )
-                for res in coco_results:
-                    names_map = getattr(res, "names", {})
-                    boxes = getattr(res, "boxes", None)
-                    if boxes is None:
-                        continue
-                    for box in boxes:
-                        xyxy = box.xyxy[0].tolist()
-                        x1, y1, x2, y2 = [int(round(v)) for v in xyxy]
-                        x1, y1 = max(0, x1), max(0, y1)
-                        x2, y2 = min(width, x2), min(height, y2)
-                        conf = float(box.conf[0].item())
-                        cls_id = int(box.cls[0].item())
-                        cls_name = str(names_map.get(cls_id, "")).lower()
-                        bbox_dict = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
-
-                        if cls_name in COCO_WASTE_CLASS_MAP:
-                            mapped_cat = COCO_WASTE_CLASS_MAP[cls_name]
-                            box_area = float(max(0, x2 - x1) * max(0, y2 - y1))
-                            raw_detections.append(
-                                {
-                                    "class_name": mapped_cat,
-                                    "confidence": round(min(0.95, conf + 0.15), 2),
-                                    "bbox": bbox_dict,
-                                    "area_ratio": round(box_area / total_area, 4),
-                                }
-                            )
-            except Exception as exc:
-                logger.debug("Auxiliary COCO pass skipped: %s", exc)
-
-        # Step 3: Complementary Multi-Spectral Segmentation for Organic Waste & Dry Leaves / Biomass
-        if raw_detections:
-            supplemental = self._segment_complementary_waste_regions(
-                img_bgr, img_hsv, raw_detections, non_waste_boxes
-            )
-            raw_detections.extend(supplemental)
-        else:
-            # If primary YOLO found no objects, run fast analytical fallback
-            fallback_dets = self._run_analytical_fallback(img_bgr)
-            raw_detections.extend(fallback_dets)
-
-        # Step 5: Non-Maximum Suppression (NMS) & Category-Balanced Selection
-        raw_detections.sort(key=lambda d: float(d["confidence"]), reverse=True)
+        # ------------------------------------------------------------------
+        # PASS 3: Unified Confidence & Containment NMS on Distinct YOLO Objects
+        # ------------------------------------------------------------------
+        raw_detections.sort(
+            key=lambda d: float(d["confidence"]) + float(d.get("_score_boost", 0.0)),
+            reverse=True,
+        )
         final_detections: List[Dict[str, Any]] = []
 
         for cand in raw_detections:
             duplicate = False
+            cand_area = float(
+                max(1, (cand["bbox"]["x2"] - cand["bbox"]["x1"]) * (cand["bbox"]["y2"] - cand["bbox"]["y1"]))
+            )
             for kept in final_detections:
                 iou = _compute_iou(cand["bbox"], kept["bbox"])
                 containment = _compute_containment(cand["bbox"], kept["bbox"])
-                if iou > 0.38 or (containment > 0.75 and cand["class_name"] == kept["class_name"]):
+                reverse_contain = _compute_containment(kept["bbox"], cand["bbox"])
+                same_sub = cand.get("subclass") == kept.get("subclass")
+                same_cat = cand["class_name"] == kept["class_name"]
+                kept_area = float(
+                    max(1, (kept["bbox"]["x2"] - kept["bbox"]["x1"]) * (kept["bbox"]["y2"] - kept["bbox"]["y1"]))
+                )
+
+                if iou > 0.42:
+                    duplicate = True
+                    break
+                if same_cat and (containment > 0.72 or (same_sub and reverse_contain > 0.78)):
+                    duplicate = True
+                    break
+                if (
+                    kept["confidence"] >= 0.72
+                    and containment >= 0.88
+                    and cand_area < kept_area * 0.16
+                    and cand["confidence"] < 0.45
+                    and cand.get("subclass") in ("Mixed litter", "Dry leaves & foliage", "Food & organic waste")
+                ):
                     duplicate = True
                     break
             if not duplicate:
-                final_detections.append(cand)
-            if len(final_detections) >= 20:
+                clean_det = {
+                    k: v for k, v in cand.items() if k != "_score_boost"
+                }
+                final_detections.append(clean_det)
+            if len(final_detections) >= 24:
                 break
 
-        return final_detections
+        # ------------------------------------------------------------------
+        # PASS 4: Complementary Pure-NumPy Spectral Check (Dense Piles Only)
+        # Uses deduplicated distinct YOLO objects so repeated tile boxes never
+        # inflate object count on simple 1-3 object scenes.
+        # ------------------------------------------------------------------
+        if len(final_detections) >= 4:
+            supplemental = self._segment_complementary_waste_numpy(
+                pil_img, final_detections, non_waste_boxes, width, height
+            )
+            for item in supplemental:
+                if len(final_detections) >= 24:
+                    break
+                dup_sup = any(
+                    _compute_iou(item["bbox"], kept["bbox"]) > 0.42
+                    or (
+                        item["class_name"] == kept["class_name"]
+                        and _compute_containment(item["bbox"], kept["bbox"]) > 0.65
+                    )
+                    for kept in final_detections
+                )
+                if not dup_sup:
+                    final_detections.append(item)
+
+        final_detections.sort(key=lambda d: float(d["confidence"]), reverse=True)
+        return final_detections, False
 
     def _classify_region_heuristically(
         self, roi_bgr: np.ndarray, roi_hsv: np.ndarray
-    ) -> Tuple[str, float]:
+    ) -> Tuple[str, str, float]:
         """
         Deterministically classify a candidate waste region into one of the three
         functional categories based on HSV chromaticity and luminance statistics.
         """
         if roi_bgr.size == 0 or roi_hsv.size == 0:
-            return "Plastic Waste", 0.78
+            return "Plastic Waste", "Mixed litter", 0.78
 
         mean_h = float(np.mean(roi_hsv[:, :, 0]))
         mean_s = float(np.mean(roi_hsv[:, :, 1]))
@@ -745,22 +1340,22 @@ class VisionEngine:
         std_v = float(np.std(roi_hsv[:, :, 2]))
 
         if (5.0 <= mean_h <= 28.0 and mean_s > 95.0) or (mean_h > 160.0 and mean_s > 110.0):
-            conf = min(0.94, 0.74 + (mean_s / 1000.0))
-            return "Organic Waste", round(conf, 2)
+            conf = min(0.92, 0.72 + (mean_s / 1000.0))
+            return "Organic Waste", "Food & organic waste", round(conf, 2)
 
         if 15.0 <= mean_h <= 65.0 and 40.0 <= mean_s <= 145.0 and mean_v < 185.0:
-            conf = min(0.92, 0.72 + (std_v / 300.0))
-            return "Dry Leaves / Biomass", round(conf, 2)
+            conf = min(0.90, 0.70 + (std_v / 300.0))
+            return "Dry Leaves / Biomass", "Dry leaves & foliage", round(conf, 2)
 
-        conf = min(0.95, 0.76 + (std_v / 280.0))
-        return "Plastic Waste", round(conf, 2)
+        conf = min(0.93, 0.74 + (std_v / 280.0))
+        return "Plastic Waste", "Mixed litter", round(conf, 2)
 
     def _run_analytical_fallback_numpy(
         self, img_bgr: np.ndarray
     ) -> List[Dict[str, Any]]:
         """
-        Pure NumPy + Pillow analytical segmentation pipeline used in lightweight
-        serverless environments where OpenCV is omitted to fit lambda size limits.
+        Pure NumPy + Pillow analytical segmentation pipeline used ONLY when
+        neither ONNX Runtime nor PyTorch YOLO weights are available.
         """
         height, width = img_bgr.shape[:2]
         total_area = float(width * height)
@@ -770,10 +1365,8 @@ class VisionEngine:
         img_rgb = img_bgr[:, :, ::-1]
         pil_rgb = Image.fromarray(img_rgb, mode="RGB")
         hsv_arr = np.array(pil_rgb.convert("HSV"), dtype=np.uint8)
-        # Scale Pillow H (0..255) to OpenCV H (0..179) so heuristic thresholds match
         hsv_arr[:, :, 0] = (hsv_arr[:, :, 0].astype(np.uint16) * 180 // 256).astype(np.uint8)
 
-        # Downscale onto a fast working grid for connected-component localization
         grid_w = min(96, max(24, width // 6))
         grid_h = min(72, max(18, height // 6))
         small_rgb = np.array(
@@ -795,13 +1388,10 @@ class VisionEngine:
 
         gx = np.abs(np.diff(small_gray, axis=1, prepend=small_gray[:, :1]))
         gy = np.abs(np.diff(small_gray, axis=0, prepend=small_gray[:1, :]))
-        edge_mag = gx + gy
-
-        saliency = color_dist + 0.65 * edge_mag
+        saliency = color_dist + 0.65 * (gx + gy)
         thresh = max(22.0, min(65.0, float(np.percentile(saliency, 68))))
         fg_mask = saliency > thresh
 
-        # Simple 3x3 morphological closing approximation on boolean grid to connect fragments
         padded = np.pad(fg_mask, 1, mode="constant", constant_values=False)
         neighbor_count = sum(
             padded[dy : dy + grid_h, dx : dx + grid_w].astype(np.uint8)
@@ -810,46 +1400,15 @@ class VisionEngine:
         )
         fg_mask = neighbor_count >= 3
 
-        visited = np.zeros_like(fg_mask, dtype=bool)
-        candidate_boxes: List[Tuple[int, int, int, int, float]] = []
-        min_box_area = total_area * 0.012
-        max_box_area = total_area * 0.85
-        scale_x = width / float(grid_w)
-        scale_y = height / float(grid_h)
+        candidate_boxes = _extract_connected_components(
+            fg_mask,
+            total_area=total_area,
+            min_area_ratio=0.012,
+            max_area_ratio=0.85,
+            img_width=width,
+            img_height=height,
+        )
 
-        for sy in range(grid_h):
-            for sx in range(grid_w):
-                if not fg_mask[sy, sx] or visited[sy, sx]:
-                    continue
-                stack = [(sy, sx)]
-                visited[sy, sx] = True
-                min_x, max_x = sx, sx
-                min_y, max_y = sy, sy
-                while stack:
-                    cy, cx = stack.pop()
-                    if cx < min_x:
-                        min_x = cx
-                    if cx > max_x:
-                        max_x = cx
-                    if cy < min_y:
-                        min_y = cy
-                    if cy > max_y:
-                        max_y = cy
-                    for ny in range(max(0, cy - 1), min(grid_h, cy + 2)):
-                        for nx in range(max(0, cx - 1), min(grid_w, cx + 2)):
-                            if fg_mask[ny, nx] and not visited[ny, nx]:
-                                visited[ny, nx] = True
-                                stack.append((ny, nx))
-
-                x1 = max(0, int(min_x * scale_x))
-                y1 = max(0, int(min_y * scale_y))
-                x2 = min(width, int((max_x + 1) * scale_x))
-                y2 = min(height, int((max_y + 1) * scale_y))
-                box_area = float(max(0, x2 - x1) * max(0, y2 - y1))
-                if min_box_area <= box_area <= max_box_area:
-                    candidate_boxes.append((x1, y1, x2, y2, box_area))
-
-        candidate_boxes.sort(key=lambda b: b[4], reverse=True)
         selected_boxes: List[Tuple[int, int, int, int, float]] = []
         for box in candidate_boxes:
             x1, y1, x2, y2, area = box
@@ -880,19 +1439,14 @@ class VisionEngine:
         for x1, y1, x2, y2, box_area in selected_boxes:
             roi_bgr = img_bgr[y1:y2, x1:x2]
             roi_hsv = hsv_arr[y1:y2, x1:x2]
-            cat_name, confidence = self._classify_region_heuristically(roi_bgr, roi_hsv)
-            area_ratio = round(box_area / total_area, 4)
+            cat_name, sub_name, confidence = self._classify_region_heuristically(roi_bgr, roi_hsv)
             detections.append(
                 {
                     "class_name": cat_name,
+                    "subclass": sub_name,
                     "confidence": confidence,
-                    "bbox": {
-                        "x1": int(x1),
-                        "y1": int(y1),
-                        "x2": int(x2),
-                        "y2": int(y2),
-                    },
-                    "area_ratio": area_ratio,
+                    "bbox": {"x1": int(x1), "y1": int(y1), "x2": int(x2), "y2": int(y2)},
+                    "area_ratio": round(box_area / total_area, 4),
                 }
             )
         return detections
@@ -902,8 +1456,7 @@ class VisionEngine:
     ) -> List[Dict[str, Any]]:
         """
         Deterministic OpenCV contour and color/texture segmentation pipeline.
-        Used when YOLOv8 weights or PyTorch are unavailable; falls back cleanly to
-        pure Pillow/NumPy segmentation when OpenCV is omitted.
+        Only executed when YOLO weights or runtimes are missing.
         """
         if not HAS_CV2 or cv2 is None:
             return self._run_analytical_fallback_numpy(img_bgr)
@@ -983,19 +1536,14 @@ class VisionEngine:
         for x1, y1, x2, y2, box_area in selected_boxes:
             roi_bgr = img_bgr[y1:y2, x1:x2]
             roi_hsv = img_hsv[y1:y2, x1:x2]
-            cat_name, confidence = self._classify_region_heuristically(roi_bgr, roi_hsv)
-            area_ratio = round(box_area / total_area, 4)
+            cat_name, sub_name, confidence = self._classify_region_heuristically(roi_bgr, roi_hsv)
             detections.append(
                 {
                     "class_name": cat_name,
+                    "subclass": sub_name,
                     "confidence": confidence,
-                    "bbox": {
-                        "x1": int(x1),
-                        "y1": int(y1),
-                        "x2": int(x2),
-                        "y2": int(y2),
-                    },
-                    "area_ratio": area_ratio,
+                    "bbox": {"x1": int(x1), "y1": int(y1), "x2": int(x2), "y2": int(y2)},
+                    "area_ratio": round(box_area / total_area, 4),
                 }
             )
 
@@ -1006,47 +1554,43 @@ class VisionEngine:
     ) -> Dict[str, Any]:
         """
         Run waste detection and severity analysis on an image.
-        Returns bounding boxes, functional categories, severity score, severity tier,
-        and inference mode ("YOLOv8" or "Analytical Fallback").
+        Returns bounding boxes, functional categories + specific TACO subclasses,
+        severity score, severity tier, and inference mode ("YOLOv8" or "Analytical Fallback").
         """
         if isinstance(image_source, Image.Image):
-            pil_img = image_source.convert("RGB")
+            pil_img = ImageOps.exif_transpose(image_source).convert("RGB")
         elif isinstance(image_source, (bytes, bytearray)):
-            pil_img = Image.open(io.BytesIO(image_source)).convert("RGB")
+            with Image.open(io.BytesIO(image_source)) as opened:
+                pil_img = ImageOps.exif_transpose(opened).convert("RGB")
         else:
-            pil_img = Image.open(Path(image_source)).convert("RGB")
+            with Image.open(Path(image_source)) as opened:
+                pil_img = ImageOps.exif_transpose(opened).convert("RGB")
 
         # Memory optimization: resize high-resolution images to max 1024px to prevent OOM
         max_dim = max(pil_img.size)
         if max_dim > 1024:
             scale = 1024.0 / max_dim
-            new_w = max(32, int(pil_img.size[0] * scale))
-            new_h = max(32, int(pil_img.size[1] * scale))
+            new_w = max(32, int(round(pil_img.size[0] * scale)))
+            new_h = max(32, int(round(pil_img.size[1] * scale)))
             pil_img = pil_img.resize((new_w, new_h), Image.Resampling.BILINEAR)
 
         img_width, img_height = pil_img.size
-        img_rgb = np.array(pil_img)
-        if HAS_CV2 and cv2 is not None:
-            img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-        else:
-            img_bgr = img_rgb[:, :, ::-1].copy()
-
         detections: List[Dict[str, Any]] = []
         inference_mode = "Analytical Fallback"
 
-        if self.yolo_available and HAS_CV2 and self.model is not None:
+        if self.yolo_available and (self.model is not None or self.coco_model is not None):
             try:
-                detections = self._run_hybrid_yolo_inference(img_bgr)
-                if detections:
-                    inference_mode = "YOLOv8"
-                else:
-                    detections = self._run_analytical_fallback(img_bgr)
-                    inference_mode = "Analytical Fallback"
+                detections, _ = self._run_hybrid_yolo_inference(pil_img)
+                inference_mode = "YOLOv8"
             except Exception as exc:
                 logger.warning("YOLOv8 inference error, switching to fallback: %s", exc)
+                img_rgb = np.array(pil_img)
+                img_bgr = img_rgb[:, :, ::-1].copy()
                 detections = self._run_analytical_fallback(img_bgr)
                 inference_mode = "Analytical Fallback"
         else:
+            img_rgb = np.array(pil_img)
+            img_bgr = img_rgb[:, :, ::-1].copy()
             detections = self._run_analytical_fallback(img_bgr)
             inference_mode = "Analytical Fallback"
 
@@ -1149,4 +1693,3 @@ def analyze_waste_image(
 def get_vision_status() -> Dict[str, Any]:
     """Module-level convenience function to retrieve AI engine status."""
     return vision_engine.get_status()
-

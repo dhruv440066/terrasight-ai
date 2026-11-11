@@ -1,49 +1,130 @@
 {
-  "evaluated_at": "2026-10-08T05:28:54.342670+00:00",
+  "evaluated_at": "2026-11-11T18:38:32.412803+00:00",
   "model_status": {
     "ai_engine": "Online",
     "inference_mode": "YOLOv8",
+    "runtime": "ONNX Runtime",
     "device": "cpu",
-    "model_path": "C:\\Users\\LENOVO\\TACO\\backend\\models\\best.pt",
+    "model_path": "C:\\Users\\LENOVO\\TACO\\backend\\models\\best.onnx",
+    "weights_loaded": "best.onnx + yolov8n.onnx",
     "categories": [
       "Plastic Waste",
       "Organic Waste",
       "Dry Leaves / Biomass"
+    ],
+    "granular_classes": [
+      "Plastic bottle",
+      "Glass bottle & jar",
+      "Drink & metal can",
+      "Plastic bag & film",
+      "Plastic wrapper",
+      "Disposable cup",
+      "Styrofoam piece",
+      "Bottle cap, straw & lid",
+      "Food & takeout container",
+      "Cardboard carton",
+      "Paper & paper bag",
+      "Cigarette",
+      "Mixed litter"
     ]
   },
-  "images_evaluated": 5,
-  "elapsed_seconds": 11.16,
+  "val_dataset_root": "C:\\Users\\LENOVO\\TACO\\backend\\taco_yolo_dataset",
+  "images_evaluated": 225,
+  "elapsed_seconds": 67.19,
+  "raw_taco_yolo_validation": {
+    "weights": "C:\\Users\\LENOVO\\TACO\\backend\\models\\best.pt",
+    "imgsz": 512,
+    "nc": 13,
+    "precision": 0.1962,
+    "recall": 0.2477,
+    "mAP50": 0.1665,
+    "mAP50_95": 0.1057,
+    "per_class": {
+      "Plastic bottle": {
+        "mAP50": 0.366,
+        "mAP50_95": 0.2293
+      },
+      "Glass bottle & jar": {
+        "mAP50": 0.1313,
+        "mAP50_95": 0.0875
+      },
+      "Drink & metal can": {
+        "mAP50": 0.4827,
+        "mAP50_95": 0.3127
+      },
+      "Plastic bag & film": {
+        "mAP50": 0.1044,
+        "mAP50_95": 0.0589
+      },
+      "Plastic wrapper": {
+        "mAP50": 0.2427,
+        "mAP50_95": 0.1334
+      },
+      "Disposable cup": {
+        "mAP50": 0.2193,
+        "mAP50_95": 0.1433
+      },
+      "Styrofoam piece": {
+        "mAP50": 0.1423,
+        "mAP50_95": 0.1089
+      },
+      "Bottle cap, straw & lid": {
+        "mAP50": 0.1076,
+        "mAP50_95": 0.0714
+      },
+      "Food & takeout container": {
+        "mAP50": 0.1017,
+        "mAP50_95": 0.067
+      },
+      "Cardboard carton": {
+        "mAP50": 0.1347,
+        "mAP50_95": 0.0886
+      },
+      "Paper & paper bag": {
+        "mAP50": 0.052,
+        "mAP50_95": 0.0345
+      },
+      "Cigarette": {
+        "mAP50": 0.0126,
+        "mAP50_95": 0.0045
+      },
+      "Mixed litter": {
+        "mAP50": 0.0672,
+        "mAP50_95": 0.0345
+      }
+    }
+  },
   "overall_metrics": {
-    "precision": 1.0,
-    "recall": 1.0,
-    "mAP50": 0.98,
-    "mAP50_95": 0.7644,
-    "f1_score": 1.0
+    "precision": 0.2974,
+    "recall": 0.2321,
+    "mAP50": 0.1485,
+    "mAP50_95": 0.0958,
+    "f1_score": 0.2485
   },
   "class_wise_metrics": {
     "Plastic Waste": {
-      "precision": 1.0,
-      "recall": 1.0,
-      "f1_score": 1.0,
-      "mAP50": 0.98,
-      "mAP50_95": 0.7644,
-      "support": 61
+      "precision": 0.454,
+      "recall": 0.4862,
+      "f1_score": 0.4695,
+      "mAP50": 0.339,
+      "mAP50_95": 0.2081,
+      "support": 325
     },
     "Organic Waste": {
-      "precision": 1.0,
-      "recall": 1.0,
-      "f1_score": 1.0,
-      "mAP50": 0.98,
-      "mAP50_95": 0.7644,
-      "support": 14
+      "precision": 0.0667,
+      "recall": 0.0625,
+      "f1_score": 0.0645,
+      "mAP50": 0.0184,
+      "mAP50_95": 0.0133,
+      "support": 16
     },
     "Dry Leaves / Biomass": {
-      "precision": 1.0,
-      "recall": 1.0,
-      "f1_score": 1.0,
-      "mAP50": 0.98,
-      "mAP50_95": 0.7644,
-      "support": 10
+      "precision": 0.3714,
+      "recall": 0.1477,
+      "f1_score": 0.2114,
+      "mAP50": 0.0882,
+      "mAP50_95": 0.0658,
+      "support": 88
     }
   },
   "confusion_matrix": {
@@ -55,94 +136,114 @@
     ],
     "matrix": [
       [
-        61,
-        0,
-        0,
-        0
+        158,
+        1,
+        11,
+        155
       ],
       [
-        0,
-        14,
-        0,
-        0
+        6,
+        1,
+        1,
+        8
       ],
       [
-        0,
-        0,
+        17,
+        1,
+        13,
+        57
+      ],
+      [
+        167,
+        12,
         10,
-        0
-      ],
-      [
-        0,
-        0,
-        0,
         0
       ]
     ]
   },
-  "benchmark_samples": [
+  "qualitative_samples": [
     {
-      "filename": "waste_53dc186fbb29.png",
-      "detection_count": 5,
+      "filename": "waste_28db1a6c71ba.png",
+      "inference_mode": "YOLOv8",
+      "detection_count": 12,
       "category_counts": {
-        "Plastic Waste": 1,
-        "Dry Leaves / Biomass": 4
+        "Organic Waste": 2,
+        "Plastic Waste": 10
       },
-      "severity_score": 63.31,
-      "severity_tier": "High",
-      "highest_confidence": 0.95,
-      "average_confidence": 0.854
+      "subclass_counts": {
+        "Food & organic waste": 2,
+        "Drink & metal can": 4,
+        "Plastic bottle": 1,
+        "Plastic bag & film": 3,
+        "Styrofoam piece": 1,
+        "Disposable cup": 1
+      },
+      "severity_score": 11.93,
+      "severity_tier": "Low",
+      "highest_confidence": 0.7,
+      "average_confidence": 0.405
     },
     {
       "filename": "waste_5cdb2b47799b.png",
-      "detection_count": 20,
+      "inference_mode": "YOLOv8",
+      "detection_count": 21,
       "category_counts": {
-        "Plastic Waste": 18,
-        "Organic Waste": 2
+        "Organic Waste": 1,
+        "Plastic Waste": 20
       },
-      "severity_score": 34.53,
-      "severity_tier": "Medium",
-      "highest_confidence": 0.92,
-      "average_confidence": 0.786
+      "subclass_counts": {
+        "Food & organic waste": 1,
+        "Plastic bottle": 9,
+        "Drink & metal can": 7,
+        "Plastic wrapper": 2,
+        "Mixed litter": 2
+      },
+      "severity_score": 8.94,
+      "severity_tier": "Low",
+      "highest_confidence": 0.69,
+      "average_confidence": 0.373
     },
     {
-      "filename": "waste_5d79529309dc.png",
-      "detection_count": 20,
+      "filename": "waste_a75b0e3de405.jpg",
+      "inference_mode": "YOLOv8",
+      "detection_count": 5,
       "category_counts": {
-        "Plastic Waste": 14,
-        "Dry Leaves / Biomass": 2,
-        "Organic Waste": 4
+        "Organic Waste": 2,
+        "Plastic Waste": 2,
+        "Dry Leaves / Biomass": 1
       },
-      "severity_score": 47.74,
-      "severity_tier": "Medium",
-      "highest_confidence": 0.92,
-      "average_confidence": 0.754
+      "subclass_counts": {
+        "Food & organic waste": 2,
+        "Plastic bottle": 1,
+        "Cardboard carton": 1,
+        "Drink & metal can": 1
+      },
+      "severity_score": 9.41,
+      "severity_tier": "Low",
+      "highest_confidence": 0.71,
+      "average_confidence": 0.436
     },
     {
-      "filename": "waste_641167a8d88f.png",
-      "detection_count": 20,
-      "category_counts": {
-        "Plastic Waste": 14,
-        "Dry Leaves / Biomass": 2,
-        "Organic Waste": 4
-      },
-      "severity_score": 47.74,
-      "severity_tier": "Medium",
-      "highest_confidence": 0.92,
-      "average_confidence": 0.754
+      "filename": "waste_53dc186fbb29.png",
+      "inference_mode": "YOLOv8",
+      "detection_count": 0,
+      "category_counts": {},
+      "subclass_counts": {},
+      "severity_score": 0.0,
+      "severity_tier": "Low",
+      "highest_confidence": 0.0,
+      "average_confidence": 0.0
     },
     {
-      "filename": "waste_ba6bd9eaaa1c.png",
-      "detection_count": 20,
-      "category_counts": {
-        "Plastic Waste": 14,
-        "Dry Leaves / Biomass": 2,
-        "Organic Waste": 4
-      },
-      "severity_score": 47.74,
-      "severity_tier": "Medium",
-      "highest_confidence": 0.92,
-      "average_confidence": 0.754
+      "filename": "waste_a6ea556b6ce4.jpg",
+      "inference_mode": "YOLOv8",
+      "detection_count": 0,
+      "category_counts": {},
+      "subclass_counts": {},
+      "severity_score": 0.0,
+      "severity_tier": "Low",
+      "highest_confidence": 0.0,
+      "average_confidence": 0.0
     }
   ]
 }

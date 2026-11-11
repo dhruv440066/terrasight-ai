@@ -104,6 +104,15 @@ export const SeverityCard: React.FC<SeverityCardProps> = ({
               CATEGORY_BAR_STYLES[category] || CATEGORY_BAR_STYLES['Plastic Waste'];
             const isExpanded = expandedCategory === category;
             const catDetections = detections.filter((d) => d.class_name === category);
+            const subclassCounts = catDetections.reduce<Record<string, number>>((acc, d) => {
+              const sub = d.subclass || d.class_name;
+              acc[sub] = (acc[sub] || 0) + 1;
+              return acc;
+            }, {});
+            const subclassSummary = Object.entries(subclassCounts)
+              .sort((a, b) => b[1] - a[1])
+              .map(([name, cnt]) => (cnt > 1 ? `${name} (${cnt})` : name))
+              .join(' · ');
 
             return (
               <div
@@ -137,6 +146,12 @@ export const SeverityCard: React.FC<SeverityCardProps> = ({
                     </div>
                   </div>
 
+                  {subclassSummary && subclassSummary !== category && (
+                    <p className="truncate text-[11px] font-medium text-slate-600">
+                      {subclassSummary}
+                    </p>
+                  )}
+
                   {/* Confidence Bar */}
                   <div className="flex items-center gap-2.5">
                     <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-200">
@@ -160,13 +175,18 @@ export const SeverityCard: React.FC<SeverityCardProps> = ({
                       {catDetections.map((det, idx) => (
                         <div
                           key={idx}
-                          className="flex items-center justify-between rounded bg-slate-50 px-2 py-1 text-[11px] text-slate-700"
+                          className="flex items-center justify-between gap-2 rounded bg-slate-50 px-2 py-1 text-[11px] text-slate-700"
                         >
-                          <span>
-                            #{idx + 1} [{det.bbox.x1}, {det.bbox.y1} → {det.bbox.x2},{' '}
-                            {det.bbox.y2}]
+                          <span className="truncate">
+                            #{idx + 1}{' '}
+                            <strong className="text-slate-900">
+                              {det.subclass || det.class_name}
+                            </strong>{' '}
+                            <span className="text-slate-500">
+                              [{det.bbox.x1}, {det.bbox.y1} → {det.bbox.x2}, {det.bbox.y2}]
+                            </span>
                           </span>
-                          <span className="font-bold text-emerald-700">
+                          <span className="shrink-0 font-bold text-emerald-700">
                             {Math.round(det.confidence * 100)}% conf
                           </span>
                         </div>

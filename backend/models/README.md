@@ -1,32 +1,32 @@
 # CleanPath AI — YOLOv8 Waste Detection Models Guide
 
-CleanPath AI uses a multi-stage **YOLOv8 + Spectral ROI Waste Detection Engine** (`backend/vision_engine.py`) trained on the **TACO (Trash Annotations in Context)** dataset mapped to three municipal sanitation functional categories:
+CleanPath AI uses a unified **Dual-YOLOv8 + Spectral ROI Waste Detection Engine** (`backend/vision_engine.py` & `api/vision_engine.py`) trained on the **TACO (Trash Annotations in Context)** dataset across **13 visually coherent granular trash classes** mapped 1-to-1 into three municipal sanitation functional categories:
 
-| Class ID | Functional Category | DB Enum | Weight ($w_c$) | Target Waste Types |
-| :--- | :--- | :--- | :--- | :--- |
-| `0` | **Plastic Waste** | `PLASTIC_WASTE` | `1.0` | Clear/colored PET bottles, plastic bags, wrappers, cups, straws, lids, sachets, synthetic containers |
-| `1` | **Organic Waste** | `ORGANIC_WASTE` | `0.8` | Food scraps, banana/fruit peels, vegetable waste, rotting organic matter, food-contaminated containers |
-| `2` | **Dry Leaves / Biomass** | `DRY_LEAVES_BIOMASS` | `0.5` | Fallen leaves, twigs, garden clippings, yard trimmings, paper/cardboard biomass |
+| Functional Category | DB Enum | Weight ($w_c$) | Mapped TACO Item Subclasses (`subclass`) |
+| :--- | :--- | :--- | :--- |
+| **Plastic Waste** | `PLASTIC_WASTE` | `1.0` | `Plastic bottle`, `Glass bottle & jar`, `Drink & metal can`, `Plastic bag & film`, `Plastic wrapper`, `Disposable cup`, `Styrofoam piece`, `Bottle cap, straw & lid`, `Mixed litter` |
+| **Organic Waste** | `ORGANIC_WASTE` | `1.2` | `Food & takeout container`, `Food & organic waste` |
+| **Dry Leaves / Biomass** | `DRY_LEAVES_BIOMASS` | `0.7` | `Cardboard carton`, `Paper & paper bag`, `Dry leaves & foliage`, `Cigarette` |
 
 ---
 
-## 1. Model Weights Placement
+## 1. Unified ONNX Runtime & PyTorch Weight Placement
 
-Place your custom trained YOLOv8 weights at:
+Both Vercel Serverless (`api/models/`) and local FastAPI (`backend/models/`) run real YOLOv8 inference via lightweight **ONNX Runtime (`onnxruntime`)**:
 
 ```text
-backend/models/best.pt
+api/models/best.onnx        # Exported 13-class TACO YOLOv8n ONNX graph
+api/models/yolov8n.onnx     # Official COCO YOLOv8n ONNX graph (context + portrait gate)
+backend/models/best.onnx    # Mirrored ONNX graph for local parity
+backend/models/yolov8n.onnx # Mirrored COCO ONNX graph
+backend/models/best.pt      # Native PyTorch checkpoint (mirrored to weights/best.pt)
 ```
 
-When the backend starts, `VisionEngine` automatically loads weights in the following priority order:
-1. Custom environment variable `MODEL_PATH` (or `CLEANPATH_YOLO_WEIGHTS`) if specified in `.env`
-2. `backend/models/best.pt` (Custom 3-class TACO YOLOv8 checkpoint)
-3. `backend/yolov8n.pt` (Official COCO YOLOv8n auxiliary/fallback checkpoint)
-
-Both `backend/models/best.pt` and `backend/yolov8n.pt` are loaded simultaneously when available so that:
-- `best.pt` detects street-litter patterns learned from TACO across full-frame (`1024px`) and foreground-cropped tiles.
-- `yolov8n.pt` provides complementary objectness and person/portrait suppression.
-- Spectral ROI refinement (`_refine_category_from_roi`) and complementary waste region segmentation (`_segment_complementary_waste_regions`) ensure balanced recall across **Plastic Waste**, **Organic Waste**, and **Dry Leaves / Biomass** even when classes are imbalanced in raw street datasets.
+When the vision engine initializes:
+1. It loads `best.onnx` + `yolov8n.onnx` via `onnxruntime` CPUExecutionProvider (unless a newer `.pt` checkpoint or PyTorch environment overrides it).
+2. `yolov8n.onnx` runs first to identify common waste items (`bottle`, `cup`, food scraps) AND suppress non-waste scenes (portraits/selfies, vehicles, indoor furniture/laptops).
+3. `best.onnx` runs across full-frame, foreground crop, and overlapping 2x2 quadrant tiles to produce tight per-item bounding boxes with granular item names (`Plastic bottle`, `Plastic bag & film`, `Styrofoam piece`, `Plastic wrapper`, `Bottle cap, straw & lid`, `Cardboard carton`, etc.).
+4. Spectral HSV verification (`_refine_detection_from_roi`) and pile-bounded cluster verification (`_segment_complementary_waste_numpy`) boost recall on yellow/amber organic food scraps and leaf/paper debris inside confirmed multi-object piles.
 
 ---
 
@@ -35,31 +35,30 @@ Both `backend/models/best.pt` and `backend/yolov8n.pt` are loaded simultaneously
 You can customize the model path and confidence threshold via environment variables in `backend/.env`:
 
 ```env
-MODEL_PATH=models/best.pt
-CONFIDENCE_THRESHOLD=0.25
+MODEL_PATH=models/best.onnx
+CONFIDENCE_THRESHOLD=0.18
 ```
 
 ---
 
 ## 3. Training / Retraining on TACO Dataset
 
-To train or fine-tune `models/best.pt` on the local TACO dataset (`data/TACO-master`):
+To re-convert `data/` (`annotations.json`) with EXIF orientation correction, stratified class-balanced train/val/test splits, and leak-free training zoom crops, then train and export `best.pt` + `best.onnx`:
 
 ```bash
-cd backend
-python train_taco.py --epochs 30 --imgsz 640 --batch 16
+python backend/train_taco.py --epochs 18 --image-size 416 --batch-size 16
 ```
 
-What `train_taco.py` does:
-1. Converts `data/TACO-master/data/annotations.json` into YOLO format under `backend/datasets/taco_yolo/`.
-2. Maps all 60 TACO categories into the 3 functional municipal categories (`Plastic Waste`, `Organic Waste`, `Dry Leaves / Biomass`), including mapping food-contaminated containers to `Organic Waste` for better class balance.
-3. Trains YOLOv8 and copies the best checkpoint directly to `backend/models/best.pt`.
+What [`backend/train_taco.py`](../train_taco.py) does:
+1. Converts all 1,500 TACO images into `backend/taco_yolo_dataset/` (`nc=13`, EXIF-transposed `max_side=768`, plus object-centered zoom crops strictly in `train/`).
+2. Trains YOLOv8n (`AdamW`, `cos_lr=True`, `mosaic=0.65`, `erasing=0.0`) and copies `best.pt` to `backend/models/best.pt`, `weights/best.pt`, and `terrasight-ai/weights/best.pt`.
+3. Exports simplified ONNX weights (`opset=17`) to `backend/models/best.onnx` and `api/models/best.onnx`.
 
 ---
 
-## 4. Evaluating Model Performance
+## 4. Honest Model Evaluation
 
-Run the evaluation suite to compute **Precision**, **Recall**, **mAP@50**, **mAP@50-95**, **F1 Score**, **Class-wise Detection Metrics**, and the **Confusion Matrix**:
+Run [`backend/evaluate_model.py`](../evaluate_model.py) to evaluate both raw 13-class Ultralytics validation metrics (`mAP@50`, `mAP@50-95`) and end-to-end 3-class VisionEngine metrics on the held-out `val` split:
 
 ```bash
 cd backend
