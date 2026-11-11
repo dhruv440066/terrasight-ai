@@ -82,9 +82,9 @@ export function determineApiBaseUrl(): string {
       return origin;
     }
 
-    // C. Custom domains or other hosting platforms (Netlify, Vercel, VPS)
-    if (port === '' || port === '80' || port === '443') {
-      return origin;
+    // C. Vercel & custom unified domains (route API traffic via /api prefix to avoid SPA route collisions)
+    if (hostname.endsWith('.vercel.app') || port === '' || port === '80' || port === '443') {
+      return `${origin}/api`;
     }
   }
 
@@ -216,8 +216,12 @@ export function resolveImageUrl(pathOrUrl: string): string {
   ) {
     return pathOrUrl;
   }
+  const base = getApiBaseUrl();
+  if (pathOrUrl.startsWith('/api/') && base.endsWith('/api')) {
+    return `${base.slice(0, -4)}${pathOrUrl}`;
+  }
   const normalized = pathOrUrl.startsWith('/') ? pathOrUrl : `/uploads/${pathOrUrl}`;
-  return `${getApiBaseUrl()}${normalized}`;
+  return `${base}${normalized}`;
 }
 
 export async function loginApi(username: string, password: string): Promise<AuthResponse> {

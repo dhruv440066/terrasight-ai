@@ -14,7 +14,10 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import yaml
+try:
+    import yaml
+except ImportError:  # Optional in serverless API runtime where only category maps are used
+    yaml = None  # type: ignore[assignment]
 
 logger = logging.getLogger("cleanpath.train_taco")
 
@@ -373,7 +376,10 @@ def convert_taco_to_yolo(
         "names": {idx: name for idx, name in enumerate(FUNCTIONAL_CATEGORIES)},
     }
     with open(data_yaml_path, "w", encoding="utf-8") as yf:
-        yaml.safe_dump(data_yaml_content, yf, sort_keys=False)
+        if yaml is None:
+            json.dump(data_yaml_content, yf, indent=2)
+        else:
+            yaml.safe_dump(data_yaml_content, yf, sort_keys=False)
 
     logger.info(
         "TACO conversion complete at %s (train=%d, val=%d, test=%d)",

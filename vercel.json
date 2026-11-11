@@ -1,20 +1,32 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "version": 2,
-  "buildCommand": "node build-vercel.cjs",
-  "outputDirectory": "dist",
+  "services": {
+    "frontend": {
+      "root": "frontend",
+      "framework": "vite",
+      "installCommand": "npm install --include=dev",
+      "buildCommand": "npm run build",
+      "outputDirectory": "dist",
+      "rewrites": [
+        { "source": "/((?!assets/).*)", "destination": "/index.html" }
+      ]
+    },
+    "api": {
+      "root": "api",
+      "framework": "fastapi",
+      "entrypoint": "index:app"
+    }
+  },
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/index.py" },
-    { "source": "/auth/(.*)", "destination": "/api/index.py" },
-    { "source": "/incidents/(.*)", "destination": "/api/index.py" },
-    { "source": "/hotspots/(.*)", "destination": "/api/index.py" },
-    { "source": "/dispatches/(.*)", "destination": "/api/index.py" },
-    { "source": "/analytics/(.*)", "destination": "/api/index.py" },
-    { "source": "/health", "destination": "/api/index.py" },
-    { "source": "/reverse-geocode", "destination": "/api/index.py" },
-    { "source": "/uploads/(.*)", "destination": "/api/index.py" },
-    { "source": "/docs", "destination": "/api/index.py" },
-    { "source": "/openapi.json", "destination": "/api/index.py" },
-    { "source": "/(.*)", "destination": "/index.html" }
+    { "source": "/api/(.*)", "destination": { "service": "api" } },
+    { "source": "/api", "destination": { "service": "api" } },
+    { "source": "/health", "destination": { "service": "api" } },
+    { "source": "/reverse-geocode", "destination": { "service": "api" } },
+    { "source": "/auth/(.*)", "destination": { "service": "api" } },
+    { "source": "/uploads/(.*)", "destination": { "service": "api" } },
+    { "source": "/docs", "destination": { "service": "api" } },
+    { "source": "/redoc", "destination": { "service": "api" } },
+    { "source": "/openapi.json", "destination": { "service": "api" } },
+    { "source": "/(.*)", "destination": { "service": "frontend" } }
   ]
 }

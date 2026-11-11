@@ -1,40 +1,30 @@
 """
-Vercel Serverless Entrypoint for CleanPath AI (TerraSight AI)
-Mounts the FastAPI application for execution on Vercel's serverless edge.
+Vercel Serverless Entrypoint for CleanPath AI (TerraSight AI).
+Self-contained FastAPI ASGI entrypoint compatible with Vercel Services (`root: "api"`).
 """
 
+import logging
 import os
 import sys
 from pathlib import Path
 
-# Mark as running in Vercel serverless environment
+# Mark runtime as Vercel Serverless so storage/DB paths use /tmp and stateless URIs
 os.environ["VERCEL"] = "1"
 
-# Add backend directory to sys.path so modules (auth, database, etc.) resolve cleanly
+# Resolve imports from this self-contained service directory first (fallback to ../backend if local)
 current_dir = Path(__file__).resolve().parent
+if str(current_dir) not in sys.path:
+    sys.path.insert(0, str(current_dir))
+
 backend_dir = current_dir.parent / "backend"
-if str(backend_dir) not in sys.path:
-    sys.path.insert(0, str(backend_dir))
+if backend_dir.exists() and str(backend_dir) not in sys.path:
+    sys.path.append(str(backend_dir))
 
-# Import main FastAPI application from backend
-from main import app  # noqa: E402
-from database import init_db, SessionLocal  # noqa: E402
-from auth import seed_demo_users  # noqa: E402
-from seed_demo import ensure_default_users  # noqa: E402
+from main import app, ensure_app_bootstrapped  # noqa: E402
 
-# Ensure database tables and demo accounts are initialized immediately
-# in case the serverless execution environment bypasses ASGI lifespan events
 try:
-    init_db()
-    db = SessionLocal()
-    try:
-        seed_demo_users(db)
-        ensure_default_users(db)
-    finally:
-        db.close()
+    ensure_app_bootstrapped(run_demo_check=True)
 except Exception as exc:
-    import logging
     logging.getLogger("cleanpath.vercel").warning("Serverless DB bootstrap note: %s", exc)
 
-# Export app for Vercel Python runtime
 __all__ = ["app"]

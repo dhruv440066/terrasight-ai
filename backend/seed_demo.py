@@ -17,6 +17,7 @@ Run this script manually if you want pre-populated demo data:
 
 import argparse
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -26,6 +27,8 @@ from sqlalchemy.orm import Session
 
 from auth import get_password_hash
 from database import (
+    IS_SERVERLESS,
+    SERVERLESS_TMP_DIR,
     AuditLog,
     Dispatch,
     Hotspot,
@@ -44,8 +47,12 @@ from geospatial import recompute_hotspots, reverse_geocode_coordinates
 from vision_engine import map_category_to_db_enum
 
 BASE_DIR = Path(__file__).resolve().parent
-UPLOADS_DIR = BASE_DIR / "uploads"
-UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+BUNDLED_UPLOADS_DIR = BASE_DIR / "uploads"
+UPLOADS_DIR = (SERVERLESS_TMP_DIR / "uploads") if IS_SERVERLESS else BUNDLED_UPLOADS_DIR
+try:
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
 
 def ensure_default_users(db: Session) -> Dict[str, User]:
@@ -98,9 +105,9 @@ def ensure_default_users(db: Session) -> Dict[str, User]:
 
 def _generate_demo_image(filename: str, variant: int = 0) -> str:
     """Create a realistic waste sample image in uploads/ if not already present."""
-    filepath = UPLOADS_DIR / filename
-    if filepath.exists():
+    if (BUNDLED_UPLOADS_DIR / filename).exists() or (UPLOADS_DIR / filename).exists():
         return f"/uploads/{filename}"
+    filepath = UPLOADS_DIR / filename
 
     img = Image.new("RGB", (640, 480), color=(78, 82, 86))
     draw = ImageDraw.Draw(img)

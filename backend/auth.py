@@ -13,10 +13,15 @@ from typing import Any, Callable, Dict, Optional
 from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
-from database import User, get_db
+try:
+    from jose import JWTError, jwt
+except ImportError:
+    import jwt  # type: ignore[no-redef]
+    from jwt.exceptions import PyJWTError as JWTError  # type: ignore[no-redef]
+
+from database import IS_SERVERLESS, User, get_db
 
 load_dotenv()
 
@@ -128,7 +133,10 @@ def create_access_token(
         else timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     to_encode.update({"exp": expire, "iat": datetime.now(timezone.utc)})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    token = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    if isinstance(token, bytes):
+        return token.decode("utf-8")
+    return str(token)
 
 
 def verify_token(token: str) -> Dict[str, Any]:
@@ -151,6 +159,40 @@ def verify_token(token: str) -> Dict[str, Any]:
         raise credentials_exception from exc
 
 
+def _resolve_ephemeral_serverless_user(
+    db: Session, payload: Dict[str, Any]
+) -> Optional[User]:
+    """
+    When running on Vercel serverless with ephemeral /tmp SQLite (no external
+    DATABASE_URL), cold starts in a new container may not have a newly registered
+    user in SQLite yet. If the JWT signature is valid, recreate the user safely.
+    """
+    if not (IS_SERVERLESS and not os.getenv("DATABASE_URL")):
+        return None
+    username = payload.get("sub")
+    if not username:
+        return None
+    token_role = str(payload.get("role", "citizen")).strip().lower()
+    if token_role not in ("citizen", "officer"):
+        token_role = "citizen"
+    try:
+        user = User(
+            username=username,
+            name=username,
+            email=f"{username.lower()}@cleanpath.local",
+            password_hash=hash_password(f"ephemeral-{username}-token"),
+            role=token_role,
+            is_active=True,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        return user
+    except Exception:
+        db.rollback()
+        return db.query(User).filter(User.username == username).first()
+
+
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
     db: Session = Depends(get_db),
@@ -166,6 +208,8 @@ def get_current_user(
     payload = verify_token(credentials.credentials)
     username = payload.get("sub")
     user = db.query(User).filter(User.username == username).first()
+    if user is None:
+        user = _resolve_ephemeral_serverless_user(db, payload)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -190,7 +234,10 @@ def get_optional_current_user(
         username = payload.get("sub")
         if not username:
             return None
-        return db.query(User).filter(User.username == username).first()
+        user = db.query(User).filter(User.username == username).first()
+        if user is None:
+            user = _resolve_ephemeral_serverless_user(db, payload)
+        return user
     except HTTPException:
         return None
 

@@ -18,7 +18,13 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
-from sklearn.cluster import DBSCAN
+try:
+    from sklearn.cluster import DBSCAN
+
+    HAS_SKLEARN = True
+except ImportError:
+    DBSCAN = None  # type: ignore[assignment]
+    HAS_SKLEARN = False
 from sqlalchemy.orm import Session
 
 from database import Dispatch, Hotspot, HotspotReport, Incident, utc_now
@@ -158,6 +164,62 @@ def reverse_geocode_coordinates(
     }
 
 
+def _compute_haversine_cluster_labels(
+    coords: np.ndarray,
+    radius_meters: float,
+) -> List[int]:
+    """
+    Cluster [lat, lon] degree coordinates within `radius_meters`.
+    Uses scikit-learn Haversine DBSCAN when installed, or an exact pure-NumPy
+    Haversine connected-components solver (identical for min_samples=1) in
+    lightweight serverless deployments.
+    """
+    n = len(coords)
+    if n == 0:
+        return []
+    if n == 1:
+        return [0]
+
+    coords_rad = np.radians(coords)
+    eps_radians = float(radius_meters) / EARTH_RADIUS_METERS
+
+    if HAS_SKLEARN and DBSCAN is not None:
+        labels = DBSCAN(
+            eps=eps_radians,
+            min_samples=1,
+            metric="haversine",
+        ).fit_predict(coords_rad)
+        return [int(label) for label in labels]
+
+    lat = coords_rad[:, 0:1]
+    lon = coords_rad[:, 1:2]
+    dlat = lat - lat.T
+    dlon = lon - lon.T
+    a = np.sin(dlat / 2.0) ** 2 + np.cos(lat) * np.cos(lat.T) * (np.sin(dlon / 2.0) ** 2)
+    a = np.clip(a, 0.0, 1.0)
+    dist_rad = 2.0 * np.arcsin(np.sqrt(a))
+    adjacency = dist_rad <= eps_radians
+
+    labels_out = [-1] * n
+    cluster_id = 0
+    for start_idx in range(n):
+        if labels_out[start_idx] != -1:
+            continue
+        queue = [start_idx]
+        labels_out[start_idx] = cluster_id
+        head = 0
+        while head < len(queue):
+            curr = queue[head]
+            head += 1
+            for nb in np.flatnonzero(adjacency[curr]):
+                nb_idx = int(nb)
+                if labels_out[nb_idx] == -1:
+                    labels_out[nb_idx] = cluster_id
+                    queue.append(nb_idx)
+        cluster_id += 1
+    return labels_out
+
+
 def cluster_incidents_data(
     items: Sequence[Dict[str, Any]],
     radius_meters: float = DEFAULT_CLUSTER_RADIUS_METERS,
@@ -179,15 +241,7 @@ def cluster_incidents_data(
         [[float(item["latitude"]), float(item["longitude"])] for item in items],
         dtype=np.float64,
     )
-    coords_rad = np.radians(coords)
-
-    eps_radians = float(radius_meters) / EARTH_RADIUS_METERS
-    dbscan = DBSCAN(
-        eps=eps_radians,
-        min_samples=1,
-        metric="haversine",
-    )
-    labels = dbscan.fit_predict(coords_rad)
+    labels = _compute_haversine_cluster_labels(coords, radius_meters)
 
     clusters_map: Dict[int, List[int]] = {}
     for idx, label in enumerate(labels):
@@ -298,14 +352,7 @@ def recompute_hotspots(
         [[inc.latitude, inc.longitude] for inc in active_incidents],
         dtype=np.float64,
     )
-    coords_rad = np.radians(coords)
-
-    dbscan = DBSCAN(
-        eps=float(radius_meters) / EARTH_RADIUS_METERS,
-        min_samples=1,
-        metric="haversine",
-    )
-    labels = dbscan.fit_predict(coords_rad)
+    labels = _compute_haversine_cluster_labels(coords, radius_meters)
 
     clusters: Dict[int, List[Incident]] = {}
     for idx, label in enumerate(labels):

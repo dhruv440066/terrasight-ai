@@ -1,0 +1,17 @@
+# Exclude oversized datasets, weights, training scripts, and separate apps from Vercel uploads
+data/
+detector/
+weights/
+backend/
+terrasight-ai/
+demo.ipynb
+runs/
+*.pt
+*.zip
+*.db
+*.sqlite
+*.sqlite3
+__pycache__/
+node_modules/
+frontend/node_modules/
+frontend/dist/

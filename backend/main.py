@@ -4,10 +4,12 @@ AI-Powered Civic Waste Detection, EXIF Geolocation, 50m Haversine DBSCAN
 Clustering, and Municipal Sanitation Dispatch Platform.
 """
 
+import base64
 import io
 import json
 import logging
 import os
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -22,10 +24,12 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
+    Request,
     UploadFile,
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw
 from pydantic import BaseModel, Field, field_validator
@@ -49,6 +53,7 @@ from database import (
     HotspotReport,
     Incident,
     ReportDetection,
+    SERVERLESS_TMP_DIR,
     SessionLocal,
     User,
     engine,
@@ -89,9 +94,10 @@ logging.basicConfig(
 logger = logging.getLogger("cleanpath.api")
 
 BACKEND_DIR = Path(__file__).resolve().parent
+BUNDLED_UPLOAD_DIR = BACKEND_DIR / "uploads"
 IS_SERVERLESS = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
 if IS_SERVERLESS:
-    TMP_DIR = Path("/tmp")
+    TMP_DIR = SERVERLESS_TMP_DIR
     UPLOAD_DIR = TMP_DIR / os.getenv("UPLOAD_DIR", "uploads")
     MODELS_DIR = TMP_DIR / "models"
     REPORTS_DIR = TMP_DIR / "generated_reports"
@@ -353,7 +359,13 @@ def serialize_incident(
     average_confidence = round(sum(all_confs) / len(all_confs), 3) if all_confs else 0.85
 
     image_url = incident.image_path
-    if image_url and not image_url.startswith("/") and not image_url.startswith("http"):
+    if (
+        image_url
+        and not image_url.startswith("/")
+        and not image_url.startswith("http")
+        and not image_url.startswith("data:")
+        and not image_url.startswith("blob:")
+    ):
         image_url = f"/uploads/{Path(image_url).name}"
 
     lat_val = round(float(incident.latitude), 6)
@@ -388,6 +400,12 @@ def serialize_incident(
         citizen_name = getattr(incident.citizen, "name", None) or incident.citizen.username
         citizen_email = incident.citizen.email
 
+    fallback_original_name = (
+        "waste.jpg"
+        if not image_url or image_url.startswith("data:") or image_url.startswith("blob:")
+        else Path(image_url).name
+    )
+
     data: Dict[str, Any] = {
         "id": incident.id,
         "incident_uuid": incident.incident_uuid,
@@ -399,7 +417,7 @@ def serialize_incident(
         "image_path": incident.image_path,
         "image_url": image_url,
         "thumbnail_path": getattr(incident, "thumbnail_path", None) or image_url,
-        "original_filename": getattr(incident, "original_filename", None) or Path(image_url or "waste.jpg").name,
+        "original_filename": getattr(incident, "original_filename", None) or fallback_original_name,
         "latitude": lat_val,
         "longitude": lon_val,
         "location_source": incident.location_source,
@@ -588,10 +606,41 @@ def validate_and_save_upload(upload_file: UploadFile) -> Tuple[Path, bytes]:
 
     safe_filename = f"waste_{uuid.uuid4().hex[:12]}{original_suffix}"
     saved_path = UPLOAD_DIR / safe_filename
-    with open(saved_path, "wb") as out_f:
-        out_f.write(raw_bytes)
+    try:
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        with open(saved_path, "wb") as out_f:
+            out_f.write(raw_bytes)
+    except Exception as exc:
+        if not IS_SERVERLESS:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to save uploaded image: {exc}",
+            ) from exc
+        logger.debug("Serverless ephemeral disk write skipped: %s", exc)
 
     return saved_path, raw_bytes
+
+
+def _encode_compact_data_uri(raw_bytes: bytes, max_dim: int = 640) -> Optional[str]:
+    """Encode a compact RGB JPEG data URI for stateless serverless persistence."""
+    try:
+        with Image.open(io.BytesIO(raw_bytes)) as img:
+            rgb = img.convert("RGB")
+            w, h = rgb.size
+            largest = max(w, h)
+            if largest > max_dim and largest > 0:
+                scale = float(max_dim) / float(largest)
+                rgb = rgb.resize(
+                    (max(32, int(w * scale)), max(32, int(h * scale))),
+                    Image.Resampling.BILINEAR,
+                )
+            buf = io.BytesIO()
+            rgb.save(buf, format="JPEG", quality=75, optimize=True)
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            return f"data:image/jpeg;base64,{b64}"
+    except Exception as exc:
+        logger.debug("Base64 data URI encoding skipped: %s", exc)
+        return None
 
 
 def generate_incident_uuid(db: Session) -> str:
@@ -612,9 +661,9 @@ def _create_synthetic_demo_image(
     severity_tier: str,
 ) -> str:
     """Generate a clean visual sample image in uploads/ for demo incidents."""
-    target_path = UPLOAD_DIR / filename
-    if target_path.exists():
+    if (BUNDLED_UPLOAD_DIR / filename).exists() or (UPLOAD_DIR / filename).exists():
         return f"/uploads/{filename}"
+    target_path = UPLOAD_DIR / filename
 
     width, height = 640, 420
     img = Image.new("RGB", (width, height), color=(228, 234, 240))
@@ -1005,26 +1054,43 @@ def seed_demo_incidents_and_dispatches(
 # ==============================================================================
 
 
+_APP_BOOTSTRAP_LOCK = threading.Lock()
+_APP_BOOTSTRAPPED = False
+
+
+def ensure_app_bootstrapped(run_demo_check: bool = False) -> None:
+    """Initialize schema, demo accounts, and optional DEMO_MODE data safely once."""
+    global _APP_BOOTSTRAPPED
+    if _APP_BOOTSTRAPPED:
+        return
+    with _APP_BOOTSTRAP_LOCK:
+        if _APP_BOOTSTRAPPED:
+            return
+        init_db()
+        db = SessionLocal()
+        try:
+            seed_demo_users(db)
+            ensure_default_users(db)
+            if run_demo_check or IS_SERVERLESS:
+                demo_mode = os.getenv("DEMO_MODE", "false").strip().lower() in ("true", "1", "yes")
+                if demo_mode:
+                    if db.query(Incident).count() == 0:
+                        seed_demo_incidents_and_dispatches(db, clear_existing=False)
+                elif run_demo_check:
+                    # In production mode (DEMO_MODE=false), remove synthetic demo_sample_*.jpg
+                    # rows so the platform starts with only real citizen reports.
+                    purge_synthetic_demo_incidents(db)
+        except Exception as exc:
+            logger.error("Startup initialization error: %s", exc)
+        finally:
+            db.close()
+        _APP_BOOTSTRAPPED = True
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize SQLite schema, run non-destructive migrations, and seed default user accounts."""
-    init_db()
-    db = SessionLocal()
-    try:
-        seed_demo_users(db)
-        ensure_default_users(db)
-        demo_mode = os.getenv("DEMO_MODE", "false").strip().lower() in ("true", "1", "yes")
-        if demo_mode:
-            if db.query(Incident).count() == 0:
-                seed_demo_incidents_and_dispatches(db, clear_existing=False)
-        else:
-            # In production mode (DEMO_MODE=false), remove synthetic demo_sample_*.jpg
-            # rows so the platform starts with only real citizen reports.
-            purge_synthetic_demo_incidents(db)
-    except Exception as exc:
-        logger.error("Startup initialization error: %s", exc)
-    finally:
-        db.close()
+    ensure_app_bootstrapped(run_demo_check=True)
     yield
 
 
@@ -1037,6 +1103,15 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def ensure_serverless_bootstrap_middleware(request: Request, call_next):
+    """Guarantee DB schema & demo users exist even when serverless bypasses lifespan."""
+    if IS_SERVERLESS and not _APP_BOOTSTRAPPED:
+        ensure_app_bootstrapped(run_demo_check=False)
+    return await call_next(request)
+
 
 raw_origins = os.getenv(
     "CORS_ORIGINS",
@@ -1063,7 +1138,20 @@ app.add_middleware(
     **cors_kwargs,
 )
 
-app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+
+@app.get("/uploads/{filename:path}", include_in_schema=False)
+@app.get("/api/uploads/{filename:path}", include_in_schema=False)
+def serve_uploaded_image(filename: str) -> FileResponse:
+    """Serve uploaded or bundled demo images safely from UPLOAD_DIR or BUNDLED_UPLOAD_DIR."""
+    safe_name = Path(filename).name
+    if not safe_name or safe_name in (".", ".."):
+        raise HTTPException(status_code=404, detail="Image not found")
+    for directory in (UPLOAD_DIR, BUNDLED_UPLOAD_DIR):
+        candidate = (directory / safe_name).resolve()
+        if candidate.parent == directory.resolve() and candidate.is_file():
+            return FileResponse(candidate)
+    raise HTTPException(status_code=404, detail="Image not found")
+
 
 FRONTEND_DIST_DIR = BACKEND_DIR.parent / "frontend" / "dist"
 if (FRONTEND_DIST_DIR / "assets").exists():
@@ -1302,7 +1390,10 @@ def analyze_incident_image(
             "inference_mode": "Analytical Fallback",
         }
 
-    image_url = f"/uploads/{saved_path.name}"
+    if IS_SERVERLESS:
+        image_url = _encode_compact_data_uri(raw_bytes) or f"/uploads/{saved_path.name}"
+    else:
+        image_url = f"/uploads/{saved_path.name}"
     geo_info = reverse_geocode_coordinates(
         gps_result["latitude"], gps_result["longitude"], allow_network=False
     )
@@ -1432,12 +1523,17 @@ def create_incident(
         incident_uuid = generate_incident_uuid(db)
         citizen_id = current_user.id if current_user is not None else None
 
+        resolved_original_filename = payload.original_filename or (
+            "waste.jpg"
+            if payload.image_path.startswith("data:") or payload.image_path.startswith("blob:")
+            else Path(payload.image_path).name
+        )
         new_incident = Incident(
             incident_uuid=incident_uuid,
             citizen_id=citizen_id,
             image_path=payload.image_path,
             thumbnail_path=payload.image_path,
-            original_filename=payload.original_filename or Path(payload.image_path).name,
+            original_filename=resolved_original_filename,
             latitude=lat_val,
             longitude=lon_val,
             location_source=loc_source,
@@ -1519,6 +1615,7 @@ def create_incident(
     tags=["Citizen Portal"],
     summary="List waste complaints submitted by the current citizen or guest session",
 )
+@app.get("/api/incidents/my", tags=["Citizen Portal"], include_in_schema=False)
 @app.get("/api/reports/my", tags=["Citizen Portal"], include_in_schema=False)
 def get_my_incidents(
     guest_uuids: Optional[str] = Query(
@@ -1564,6 +1661,7 @@ def get_my_incidents(
     tags=["Citizen Portal"],
     summary="Get detailed status and timeline for a specific incident by ID or UUID",
 )
+@app.get("/api/incidents/{incident_id}", tags=["Citizen Portal"], include_in_schema=False)
 @app.get("/api/reports/{incident_id}", tags=["Citizen Portal"], include_in_schema=False)
 @app.get("/api/officer/reports/{incident_id}", tags=["Officer Command Center"], include_in_schema=False)
 def get_incident_by_id(
@@ -1599,6 +1697,7 @@ def get_incident_by_id(
     tags=["Officer Command Center"],
     summary="Get all civic waste incidents (Officer RBAC required)",
 )
+@app.get("/api/officer/incidents", tags=["Officer Command Center"], include_in_schema=False)
 @app.get("/api/officer/reports", tags=["Officer Command Center"], include_in_schema=False)
 @app.get("/api/map/reports", tags=["Officer Command Center"], include_in_schema=False)
 def get_officer_incidents(
@@ -1633,6 +1732,7 @@ def get_officer_incidents(
     tags=["Officer Command Center"],
     summary="Get 50m Haversine DBSCAN clustered hotspots ordered by priority queue",
 )
+@app.get("/api/officer/hotspots", tags=["Officer Command Center"], include_in_schema=False)
 @app.get("/api/hotspots", tags=["Officer Command Center"], include_in_schema=False)
 @app.get("/api/map/hotspots", tags=["Officer Command Center"], include_in_schema=False)
 def get_officer_hotspots(
@@ -1676,6 +1776,7 @@ def get_hotspot_by_id(
     tags=["Officer Command Center"],
     summary="Get municipal waste analytics, deduplication metrics, and system status",
 )
+@app.get("/api/officer/analytics", tags=["Officer Command Center"], include_in_schema=False)
 @app.get("/api/dashboard/statistics", tags=["Officer Command Center"], include_in_schema=False)
 def get_officer_analytics(
     officer: User = Depends(require_role("officer")),
@@ -1859,6 +1960,12 @@ def _execute_hotspot_dispatch(
     tags=["Officer Command Center"],
     summary="Dispatch a municipal sanitation crew to a clustered hotspot",
 )
+@app.post(
+    "/api/officer/dispatch/{hotspot_id}",
+    status_code=status.HTTP_201_CREATED,
+    tags=["Officer Command Center"],
+    include_in_schema=False,
+)
 def dispatch_sanitation_crew(
     hotspot_id: int,
     payload: DispatchCreateRequest,
@@ -1895,6 +2002,11 @@ def dispatch_sanitation_crew_body(
     "/officer/incidents/{incident_id}/status",
     tags=["Officer Command Center"],
     summary="Update status of an individual incident and synchronize its parent hotspot",
+)
+@app.patch(
+    "/api/officer/incidents/{incident_id}/status",
+    tags=["Officer Command Center"],
+    include_in_schema=False,
 )
 @app.patch(
     "/api/officer/reports/{incident_id}/status",
@@ -1977,6 +2089,11 @@ def update_incident_status(
     "/officer/hotspots/{hotspot_id}/status",
     tags=["Officer Command Center"],
     summary="Update status of an entire hotspot and all its constituent incidents",
+)
+@app.patch(
+    "/api/officer/hotspots/{hotspot_id}/status",
+    tags=["Officer Command Center"],
+    include_in_schema=False,
 )
 @app.patch(
     "/api/hotspots/{hotspot_id}/status",
@@ -2078,6 +2195,11 @@ def update_hotspot_status(
     tags=["Demo & Simulation"],
     summary="Seed 15 realistic civic waste incidents (10 DBSCAN hotspots, 5 dispatches)",
 )
+@app.post(
+    "/api/demo/seed",
+    tags=["Demo & Simulation"],
+    include_in_schema=False,
+)
 def seed_demo_data_endpoint(
     payload: Optional[DemoSeedRequest] = None,
     officer: User = Depends(require_role("officer")),
@@ -2102,6 +2224,11 @@ def seed_demo_data_endpoint(
     tags=["Demo & Simulation"],
     summary="Clear synthetic demo incidents and keep only real citizen reports",
 )
+@app.post(
+    "/api/demo/clear",
+    tags=["Demo & Simulation"],
+    include_in_schema=False,
+)
 def clear_demo_data_endpoint(
     officer: User = Depends(require_role("officer")),
     db: Session = Depends(get_db),
@@ -2113,8 +2240,6 @@ def clear_demo_data_endpoint(
 # ==============================================================================
 # ROOT & SPA FRONTEND SERVING (Allows opening http://127.0.0.1:8000 directly)
 # ==============================================================================
-
-from fastapi.responses import FileResponse, JSONResponse, Response
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -2144,6 +2269,19 @@ def _serve_spa_or_api_info() -> Response:
     )
 
 
+@app.get("/api", include_in_schema=False)
+def api_root_info() -> JSONResponse:
+    """Return CleanPath AI API metadata when querying /api root directly."""
+    return JSONResponse(
+        {
+            "service": "CleanPath AI (TerraSight AI)",
+            "status": "ok",
+            "health": "/api/health",
+            "docs": "/docs",
+        }
+    )
+
+
 @app.get("/", include_in_schema=False)
 def root_index() -> Response:
     """Serve CleanPath AI web application at root URL."""
@@ -2154,6 +2292,7 @@ def root_index() -> Response:
 def catch_all_spa_route(rest_of_path: str) -> Response:
     """Serve static files or React SPA index.html for any frontend client route."""
     api_prefixes = (
+        "api",
         "auth",
         "incidents",
         "officer",

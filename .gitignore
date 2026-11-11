@@ -36,6 +36,9 @@ ENV/
 
 # Databases
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 backend/cleanpath.db
@@ -50,6 +53,8 @@ frontend/dist/
 # Temporary and local runtime uploads
 backend/uploads/waste_*
 backend/uploads/*.tmp
+api/uploads/waste_*
+api/uploads/*.tmp
 backend/generated_reports/*.pdf
 backend/generated_reports/*.csv
 backend/runs/

@@ -24,7 +24,14 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import cv2
+try:
+    import cv2
+
+    HAS_CV2 = True
+except ImportError:
+    cv2 = None  # type: ignore[assignment]
+    HAS_CV2 = False
+
 import numpy as np
 from dotenv import load_dotenv
 from PIL import Image
@@ -748,13 +755,159 @@ class VisionEngine:
         conf = min(0.95, 0.76 + (std_v / 280.0))
         return "Plastic Waste", round(conf, 2)
 
+    def _run_analytical_fallback_numpy(
+        self, img_bgr: np.ndarray
+    ) -> List[Dict[str, Any]]:
+        """
+        Pure NumPy + Pillow analytical segmentation pipeline used in lightweight
+        serverless environments where OpenCV is omitted to fit lambda size limits.
+        """
+        height, width = img_bgr.shape[:2]
+        total_area = float(width * height)
+        if total_area <= 0:
+            return []
+
+        img_rgb = img_bgr[:, :, ::-1]
+        pil_rgb = Image.fromarray(img_rgb, mode="RGB")
+        hsv_arr = np.array(pil_rgb.convert("HSV"), dtype=np.uint8)
+        # Scale Pillow H (0..255) to OpenCV H (0..179) so heuristic thresholds match
+        hsv_arr[:, :, 0] = (hsv_arr[:, :, 0].astype(np.uint16) * 180 // 256).astype(np.uint8)
+
+        # Downscale onto a fast working grid for connected-component localization
+        grid_w = min(96, max(24, width // 6))
+        grid_h = min(72, max(18, height // 6))
+        small_rgb = np.array(
+            pil_rgb.resize((grid_w, grid_h), Image.Resampling.BILINEAR),
+            dtype=np.float32,
+        )
+        small_gray = (
+            0.299 * small_rgb[:, :, 0]
+            + 0.587 * small_rgb[:, :, 1]
+            + 0.114 * small_rgb[:, :, 2]
+        )
+
+        border_rgb = np.concatenate(
+            [small_rgb[0, :], small_rgb[-1, :], small_rgb[:, 0], small_rgb[:, -1]],
+            axis=0,
+        )
+        bg_median = np.median(border_rgb, axis=0)
+        color_dist = np.linalg.norm(small_rgb - bg_median, axis=2)
+
+        gx = np.abs(np.diff(small_gray, axis=1, prepend=small_gray[:, :1]))
+        gy = np.abs(np.diff(small_gray, axis=0, prepend=small_gray[:1, :]))
+        edge_mag = gx + gy
+
+        saliency = color_dist + 0.65 * edge_mag
+        thresh = max(22.0, min(65.0, float(np.percentile(saliency, 68))))
+        fg_mask = saliency > thresh
+
+        # Simple 3x3 morphological closing approximation on boolean grid to connect fragments
+        padded = np.pad(fg_mask, 1, mode="constant", constant_values=False)
+        neighbor_count = sum(
+            padded[dy : dy + grid_h, dx : dx + grid_w].astype(np.uint8)
+            for dy in range(3)
+            for dx in range(3)
+        )
+        fg_mask = neighbor_count >= 3
+
+        visited = np.zeros_like(fg_mask, dtype=bool)
+        candidate_boxes: List[Tuple[int, int, int, int, float]] = []
+        min_box_area = total_area * 0.012
+        max_box_area = total_area * 0.85
+        scale_x = width / float(grid_w)
+        scale_y = height / float(grid_h)
+
+        for sy in range(grid_h):
+            for sx in range(grid_w):
+                if not fg_mask[sy, sx] or visited[sy, sx]:
+                    continue
+                stack = [(sy, sx)]
+                visited[sy, sx] = True
+                min_x, max_x = sx, sx
+                min_y, max_y = sy, sy
+                while stack:
+                    cy, cx = stack.pop()
+                    if cx < min_x:
+                        min_x = cx
+                    if cx > max_x:
+                        max_x = cx
+                    if cy < min_y:
+                        min_y = cy
+                    if cy > max_y:
+                        max_y = cy
+                    for ny in range(max(0, cy - 1), min(grid_h, cy + 2)):
+                        for nx in range(max(0, cx - 1), min(grid_w, cx + 2)):
+                            if fg_mask[ny, nx] and not visited[ny, nx]:
+                                visited[ny, nx] = True
+                                stack.append((ny, nx))
+
+                x1 = max(0, int(min_x * scale_x))
+                y1 = max(0, int(min_y * scale_y))
+                x2 = min(width, int((max_x + 1) * scale_x))
+                y2 = min(height, int((max_y + 1) * scale_y))
+                box_area = float(max(0, x2 - x1) * max(0, y2 - y1))
+                if min_box_area <= box_area <= max_box_area:
+                    candidate_boxes.append((x1, y1, x2, y2, box_area))
+
+        candidate_boxes.sort(key=lambda b: b[4], reverse=True)
+        selected_boxes: List[Tuple[int, int, int, int, float]] = []
+        for box in candidate_boxes:
+            x1, y1, x2, y2, area = box
+            overlaps = False
+            for sx1, sy1, sx2, sy2, _ in selected_boxes:
+                ix1 = max(x1, sx1)
+                iy1 = max(y1, sy1)
+                ix2 = min(x2, sx2)
+                iy2 = min(y2, sy2)
+                if ix2 > ix1 and iy2 > iy1:
+                    inter = float((ix2 - ix1) * (iy2 - iy1))
+                    if inter / min(area, float((sx2 - sx1) * (sy2 - sy1))) > 0.45:
+                        overlaps = True
+                        break
+            if not overlaps:
+                selected_boxes.append(box)
+            if len(selected_boxes) >= 8:
+                break
+
+        if not selected_boxes:
+            pad_w = int(width * 0.18)
+            pad_h = int(height * 0.18)
+            x1, y1 = pad_w, pad_h
+            x2, y2 = max(x1 + 20, width - pad_w), max(y1 + 20, height - pad_h)
+            selected_boxes.append((x1, y1, x2, y2, float((x2 - x1) * (y2 - y1))))
+
+        detections: List[Dict[str, Any]] = []
+        for x1, y1, x2, y2, box_area in selected_boxes:
+            roi_bgr = img_bgr[y1:y2, x1:x2]
+            roi_hsv = hsv_arr[y1:y2, x1:x2]
+            cat_name, confidence = self._classify_region_heuristically(roi_bgr, roi_hsv)
+            area_ratio = round(box_area / total_area, 4)
+            detections.append(
+                {
+                    "class_name": cat_name,
+                    "confidence": confidence,
+                    "bbox": {
+                        "x1": int(x1),
+                        "y1": int(y1),
+                        "x2": int(x2),
+                        "y2": int(y2),
+                    },
+                    "area_ratio": area_ratio,
+                }
+            )
+        return detections
+
     def _run_analytical_fallback(
         self, img_bgr: np.ndarray
     ) -> List[Dict[str, Any]]:
         """
         Deterministic OpenCV contour and color/texture segmentation pipeline.
-        Used when YOLOv8 weights or PyTorch are unavailable.
+        Used when YOLOv8 weights or PyTorch are unavailable; falls back cleanly to
+        pure Pillow/NumPy segmentation when OpenCV is omitted.
         """
+        if not HAS_CV2 or cv2 is None:
+            return self._run_analytical_fallback_numpy(img_bgr)
+
         height, width = img_bgr.shape[:2]
         total_area = float(width * height)
         if total_area <= 0:
@@ -873,12 +1026,15 @@ class VisionEngine:
 
         img_width, img_height = pil_img.size
         img_rgb = np.array(pil_img)
-        img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+        if HAS_CV2 and cv2 is not None:
+            img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+        else:
+            img_bgr = img_rgb[:, :, ::-1].copy()
 
         detections: List[Dict[str, Any]] = []
         inference_mode = "Analytical Fallback"
 
-        if self.yolo_available and self.model is not None:
+        if self.yolo_available and HAS_CV2 and self.model is not None:
             try:
                 detections = self._run_hybrid_yolo_inference(img_bgr)
                 if detections:

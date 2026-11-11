@@ -7,12 +7,17 @@ Supports PostgreSQL (via DATABASE_URL) with automatic local SQLite fallback
 HotspotReports, Dispatches, and AuditLogs entities.
 """
 
+import importlib.util
 import logging
 import os
+import ssl
+import tempfile
+import threading
 from datetime import datetime, timezone
 from enum import Enum as PyEnum
 from pathlib import Path
 from typing import Generator
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from dotenv import load_dotenv
 from sqlalchemy import (
@@ -36,8 +41,9 @@ logger = logging.getLogger("cleanpath.database")
 
 BASE_DIR = Path(__file__).resolve().parent
 IS_SERVERLESS = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
+SERVERLESS_TMP_DIR = Path("/tmp") if os.name != "nt" else Path(tempfile.gettempdir())
 if IS_SERVERLESS and not os.getenv("DATABASE_URL"):
-    DEFAULT_DB_PATH = Path("/tmp") / "cleanpath.db"
+    DEFAULT_DB_PATH = SERVERLESS_TMP_DIR / "cleanpath.db"
 else:
     DEFAULT_DB_PATH = BASE_DIR / "cleanpath.db"
 
@@ -46,22 +52,54 @@ DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DEFAULT_DB_PATH.as_posix()
 if DATABASE_URL == "sqlite:///./cleanpath.db":
     DATABASE_URL = f"sqlite:///{DEFAULT_DB_PATH.as_posix()}"
 
-# Normalize Render/Heroku postgres:// and generic postgresql:// to use psycopg2 driver
+# Normalize Render/Heroku postgres:// and generic postgresql:// to an installed driver
+def _detect_postgres_scheme() -> str:
+    for mod_name, scheme in (
+        ("psycopg2", "postgresql+psycopg2"),
+        ("psycopg", "postgresql+psycopg"),
+        ("pg8000", "postgresql+pg8000"),
+    ):
+        if importlib.util.find_spec(mod_name) is not None:
+            return scheme
+    return "postgresql+psycopg2"
+
+
 if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
+    DATABASE_URL = f"{_detect_postgres_scheme()}://{DATABASE_URL[len('postgres://'):]}"
 elif DATABASE_URL.startswith("postgresql://") and not DATABASE_URL.startswith("postgresql+"):
-    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
+    DATABASE_URL = f"{_detect_postgres_scheme()}://{DATABASE_URL[len('postgresql://'):]}"
 
 engine_kwargs = {}
 if DATABASE_URL.startswith("sqlite"):
     engine_kwargs["connect_args"] = {"check_same_thread": False}
 else:
+    if DATABASE_URL.startswith("postgresql+pg8000"):
+        parsed_pg = urlparse(DATABASE_URL)
+        query_items = parse_qsl(parsed_pg.query, keep_blank_values=True)
+        ssl_requested = False
+        filtered_items = []
+        for k, v in query_items:
+            kl = k.lower()
+            if kl == "sslmode":
+                if v.lower() in ("require", "verify-ca", "verify-full"):
+                    ssl_requested = True
+                continue
+            if kl == "channel_binding":
+                continue
+            filtered_items.append((k, v))
+        DATABASE_URL = urlunparse(parsed_pg._replace(query=urlencode(filtered_items)))
+        if ssl_requested:
+            engine_kwargs["connect_args"] = {
+                "ssl_context": ssl.create_default_context()
+            }
     engine_kwargs["pool_pre_ping"] = True
     engine_kwargs["pool_recycle"] = 300
 
 engine = create_engine(DATABASE_URL, **engine_kwargs)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+_INIT_LOCK = threading.Lock()
+_SCHEMA_INITIALIZED = False
 
 
 class Base(DeclarativeBase):
@@ -172,8 +210,8 @@ class Incident(Base):
     id = Column(Integer, primary_key=True, index=True)
     incident_uuid = Column(String(64), unique=True, index=True, nullable=False)
     citizen_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
-    image_path = Column(String(512), nullable=False)
-    thumbnail_path = Column(String(512), nullable=True)
+    image_path = Column(Text, nullable=False)
+    thumbnail_path = Column(Text, nullable=True)
     original_filename = Column(String(255), nullable=True)
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
@@ -345,6 +383,17 @@ def run_schema_migrations() -> None:
                 except Exception as exc:
                     logger.debug("Migration check for %s.%s skipped: %s", table_name, col_name, exc)
 
+        else:
+            # Ensure PostgreSQL columns support long base64 data URIs when running serverless
+            for pg_stmt in (
+                "ALTER TABLE incidents ALTER COLUMN image_path TYPE TEXT",
+                "ALTER TABLE incidents ALTER COLUMN thumbnail_path TYPE TEXT",
+            ):
+                try:
+                    conn.execute(text(pg_stmt))
+                except Exception:
+                    pass
+
         # Ensure performance indexes exist on SQLite and PostgreSQL
         index_statements = [
             "CREATE INDEX IF NOT EXISTS ix_incidents_status ON incidents (status)",
@@ -365,8 +414,20 @@ def run_schema_migrations() -> None:
 init_db = run_schema_migrations
 
 
+def ensure_schema_initialized() -> None:
+    """Thread-safe lazy schema initializer for serverless workers without ASGI lifespan."""
+    global _SCHEMA_INITIALIZED
+    if _SCHEMA_INITIALIZED:
+        return
+    with _INIT_LOCK:
+        if not _SCHEMA_INITIALIZED:
+            run_schema_migrations()
+            _SCHEMA_INITIALIZED = True
+
+
 def get_db() -> Generator[Session, None, None]:
     """FastAPI dependency that yields a SQLAlchemy database session."""
+    ensure_schema_initialized()
     db = SessionLocal()
     try:
         yield db

@@ -207,15 +207,17 @@ Deploying **TerraSight AI** to **Vercel** provides instant global CDN speeds and
 
 ### Deployment Architecture Options on Vercel:
 
-#### Option A: Full-Stack on Vercel (Frontend + Serverless API)
-- Vercel builds the React frontend from `frontend/` and hosts it globally.
-- Vercel automatically deploys `api/index.py` as a Python Serverless Function using `api/requirements.txt` (FastAPI + OpenCV + Scikit-Learn + SQLAlchemy without giant 1.5GB PyTorch).
-- The vision engine runs the lightweight OpenCV Analytical Engine (<100ms inference, zero OOMs, 3-category waste detection, EXIF GPS, and 50m DBSCAN clustering).
-- Zero external servers needed!
+#### Option A: Full-Stack on Vercel Services (Frontend + Serverless API)
+- Root `vercel.json` defines two unified **Vercel Services** under one domain:
+  - `frontend`: React/Vite SPA built cleanly from `frontend/` (`installCommand: "npm install --include=dev"`, `buildCommand: "npm run build"`, `outputDirectory: "dist"`).
+  - `api`: Self-contained FastAPI ASGI service running from `api/` (`entrypoint: "index:app"`), powered by lightweight pure-Python dependencies in `api/requirements.txt` (< 85 MB uncompressed, well within Vercel's 250 MB serverless limit).
+- All frontend API requests automatically route through `/api/...`, preventing any collision with client-side routes like `/officer/analytics`.
+- The vision engine runs a fast pure-NumPy/Pillow spectral segmentation + HSV classification pipeline (EXIF GPS extraction, bounding boxes, hazard multipliers, severity scoring, and 50m Haversine clustering) with zero cold-start crashes.
+- Zero external servers required! *(Optional: set `DATABASE_URL` to a hosted PostgreSQL DB like Neon/Supabase for persistent cloud storage across serverless invocations).*
 
 #### Option B: Hybrid (Vercel Frontend + Render/Railway/HF Backend)
 - Vercel hosts the React frontend (`https://terrasight-ai.vercel.app`).
-- Backend runs on Render (`https://terrasight-ai.onrender.com`) or Hugging Face Spaces (16GB RAM free) with full PyTorch YOLOv8 models.
+- Backend runs on Render (`https://terrasight-ai.onrender.com`) or Hugging Face Spaces with full PyTorch YOLOv8 models.
 - Set environment variable in Vercel: `VITE_API_URL=https://terrasight-ai.onrender.com`.
 
 ---
@@ -225,7 +227,7 @@ Deploying **TerraSight AI** to **Vercel** provides instant global CDN speeds and
 1. **Push your code to GitHub**:
    ```bash
    git add .
-   git commit -m "Configure Vercel zero-config deployment"
+   git commit -m "Configure Vercel Services multi-app deployment"
    git push origin main
    ```
 
@@ -234,18 +236,17 @@ Deploying **TerraSight AI** to **Vercel** provides instant global CDN speeds and
    - Click **"Add New..."** -> **"Project"**.
    - Select **`dhruv440066/terrasight-ai`** from your repository list and click **"Import"**.
 
-3. **Verify Build Settings**:
-   - Vercel will detect `vercel.json` automatically:
-     - **Framework Preset**: Vite
-     - **Build Command**: `cd frontend && npm install && npm run build`
-     - **Output Directory**: `frontend/dist`
+3. **Verify Vercel Services Settings**:
+   - Vercel automatically reads `vercel.json` Services (`frontend` + `api`) from the repository root — leave **Root Directory** at the repository root (`.`) and keep **Framework Preset** as detected (do not import sub-folders individually).
    - *(Optional)* Under **Environment Variables**, you can add:
-     - `VITE_API_URL`: Your backend URL (e.g. `https://terrasight-ai.onrender.com`), or leave blank to use the built-in Vercel Serverless API.
+     - `DATABASE_URL`: Hosted Postgres URL (e.g. Neon/Supabase) for persistent storage across Vercel serverless functions (otherwise defaults to ephemeral `/tmp/cleanpath.db`).
+     - `DEMO_MODE`: Set `"true"` if you want 15 demo civic waste reports pre-seeded on startup.
+     - `VITE_API_URL`: Override only if using an external Render/Docker backend instead of the built-in `/api` service.
 
 4. **Click "Deploy"**:
-   - Within 60 seconds, your site will be live at `https://terrasight-ai.vercel.app` (or your custom assigned Vercel URL)!
+   - Both `frontend` and `api` services build and deploy together in under 60 seconds!
 
 5. **Log In and Test**:
    - **Citizen Login**: `citizen` / `citizen123`
    - **Officer Login**: `officer` / `officer123`
-   - Use the **"Server Config"** button in the navigation bar anytime to verify connection status or point to any custom API.
+   - Use the **"Server Config"** button in the navigation bar anytime to verify connection status (`/api/health`) or point to any custom API.
