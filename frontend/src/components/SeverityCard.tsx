@@ -1,14 +1,17 @@
 import React, { useState } from 'react';
 import {
   AlertTriangle,
+  BarChart3,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
   Cpu,
   Info,
   Layers,
+  ShieldAlert,
+  Sparkles,
 } from 'lucide-react';
-import type { CategoryStat, SeverityTier, WasteDetection } from '../types';
+import type { CategoryStat, SeverityBreakdown, SeverityTier, WasteDetection } from '../types';
 
 interface SeverityCardProps {
   severityScore: number;
@@ -17,6 +20,7 @@ interface SeverityCardProps {
   categoryStats?: Record<string, CategoryStat>;
   detections?: WasteDetection[];
   inferenceMode: 'YOLOv8' | 'Analytical Fallback';
+  severityBreakdown?: SeverityBreakdown;
 }
 
 const CATEGORY_BAR_STYLES: Record<string, { bar: string; dot: string }> = {
@@ -32,14 +36,22 @@ export const SeverityCard: React.FC<SeverityCardProps> = ({
   categoryStats,
   detections = [],
   inferenceMode,
+  severityBreakdown,
 }) => {
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
   const [showFormulaInfo, setShowFormulaInfo] = useState<boolean>(false);
+  const [showPillars, setShowPillars] = useState<boolean>(true);
 
   const tierStyles: Record<
     SeverityTier,
     { badge: string; bar: string; border: string; text: string }
   > = {
+    Critical: {
+      badge: 'bg-rose-700 text-white font-extrabold animate-pulse ring-2 ring-rose-400',
+      bar: 'bg-rose-600',
+      border: 'border-rose-300 bg-rose-50/60',
+      text: 'text-rose-800',
+    },
     High: {
       badge: 'bg-red-600 text-white',
       bar: 'bg-red-600',
@@ -220,16 +232,25 @@ export const SeverityCard: React.FC<SeverityCardProps> = ({
               <Info className="h-3.5 w-3.5" />
             </button>
           </div>
-          <span
-            className={`inline-flex items-center gap-1 rounded-md px-2.5 py-0.5 text-xs font-extrabold uppercase tracking-wide ${activeStyle.badge}`}
-          >
-            {severityTier === 'High' ? (
-              <AlertTriangle className="h-3.5 w-3.5" />
-            ) : (
-              <CheckCircle2 className="h-3.5 w-3.5" />
+          <div className="flex items-center gap-1.5">
+            {severityBreakdown?.prediction_reliability && (
+              <span className="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-600">
+                {severityBreakdown.prediction_reliability} Reliability
+              </span>
             )}
-            {severityTier.toUpperCase()}
-          </span>
+            <span
+              className={`inline-flex items-center gap-1 rounded-md px-2.5 py-0.5 text-xs font-extrabold uppercase tracking-wide ${activeStyle.badge}`}
+            >
+              {severityTier === 'Critical' ? (
+                <ShieldAlert className="h-3.5 w-3.5" />
+              ) : severityTier === 'High' ? (
+                <AlertTriangle className="h-3.5 w-3.5" />
+              ) : (
+                <CheckCircle2 className="h-3.5 w-3.5" />
+              )}
+              {severityTier.toUpperCase()}
+            </span>
+          </div>
         </div>
 
         <div className="my-2 h-3 w-full overflow-hidden rounded-full bg-slate-200">
@@ -248,16 +269,113 @@ export const SeverityCard: React.FC<SeverityCardProps> = ({
               ({clampedScore}%)
             </span>
           </div>
-          <span className="text-xs text-slate-500">
-            Hazard-Weighted Area Ratio Index
+          <span className="text-xs font-medium text-slate-600">
+            5-Pillar Environmental Hazard Index
           </span>
         </div>
 
+        {/* Explainable 5-Pillar Multi-Factor Breakdown */}
+        {severityBreakdown?.breakdown && (
+          <div className="mt-3 border-t border-slate-200/60 pt-3">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider text-slate-700">
+                <BarChart3 className="h-3 w-3 text-emerald-600" />
+                Score Contribution Breakdown
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowPillars((p) => !p)}
+                className="text-[11px] font-medium text-emerald-700 hover:underline"
+              >
+                {showPillars ? 'Collapse' : 'Expand'}
+              </button>
+            </div>
+
+            {showPillars && (
+              <div className="space-y-1.5 text-xs">
+                {/* 1. Quantity */}
+                {severityBreakdown.breakdown.quantity && (
+                  <div className="flex items-center justify-between rounded bg-white/70 px-2.5 py-1 text-slate-700">
+                    <span className="font-medium">Waste Quantity (25%)</span>
+                    <span className="font-semibold text-slate-900">
+                      +{severityBreakdown.breakdown.quantity.contribution} pts{' '}
+                      <span className="text-[11px] font-normal text-slate-500">
+                        ({severityBreakdown.breakdown.quantity.object_count ?? detections.length} items)
+                      </span>
+                    </span>
+                  </div>
+                )}
+
+                {/* 2. Accumulation */}
+                {severityBreakdown.breakdown.accumulation && (
+                  <div className="flex items-center justify-between rounded bg-white/70 px-2.5 py-1 text-slate-700">
+                    <span className="font-medium">Visual Footprint (25%)</span>
+                    <span className="font-semibold text-slate-900">
+                      +{severityBreakdown.breakdown.accumulation.contribution} pts{' '}
+                      <span className="text-[11px] font-normal text-slate-500">
+                        ({severityBreakdown.breakdown.accumulation.coverage_pct ?? 0}% area)
+                      </span>
+                    </span>
+                  </div>
+                )}
+
+                {/* 3. Hazard Risk */}
+                {severityBreakdown.breakdown.risk && (
+                  <div className="flex items-center justify-between rounded bg-white/70 px-2.5 py-1 text-slate-700">
+                    <span className="font-medium">Category Hazard (20%)</span>
+                    <span className="font-semibold text-slate-900">
+                      +{severityBreakdown.breakdown.risk.contribution} pts{' '}
+                      <span className="text-[11px] font-normal text-slate-500">
+                        ({severityBreakdown.breakdown.risk.dominant_category ?? 'Mixed'})
+                      </span>
+                    </span>
+                  </div>
+                )}
+
+                {/* 4. Confidence Evidence */}
+                {severityBreakdown.breakdown.confidence && (
+                  <div className="flex items-center justify-between rounded bg-white/70 px-2.5 py-1 text-slate-700">
+                    <span className="font-medium">Confidence Evidence (15%)</span>
+                    <span className="font-semibold text-slate-900">
+                      +{severityBreakdown.breakdown.confidence.contribution} pts{' '}
+                      <span className="text-[11px] font-normal text-slate-500">
+                        ({severityBreakdown.breakdown.confidence.avg_confidence_pct ?? 85}%)
+                      </span>
+                    </span>
+                  </div>
+                )}
+
+                {/* 5. Hotspot History */}
+                {severityBreakdown.breakdown.hotspot && (
+                  <div className="flex items-center justify-between rounded bg-white/70 px-2.5 py-1 text-slate-700">
+                    <span className="font-medium">Geospatial Hotspot (15%)</span>
+                    <span className="font-semibold text-slate-900">
+                      +{severityBreakdown.breakdown.hotspot.contribution} pts{' '}
+                      <span className="text-[11px] font-normal text-slate-500">
+                        ({severityBreakdown.breakdown.hotspot.repeat_count ?? 0} priors)
+                      </span>
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Explainability Text Summary */}
+        {severityBreakdown?.explanation && (
+          <div className="mt-3 rounded-lg border border-slate-200/80 bg-white/80 p-2.5 text-xs leading-relaxed text-slate-700 shadow-2xs">
+            <span className="font-bold text-slate-900">Environmental Assessment: </span>
+            {severityBreakdown.explanation}
+          </div>
+        )}
+
         {showFormulaInfo && (
           <div className="mt-3 rounded-lg border border-slate-200 bg-white/90 p-2.5 text-xs leading-relaxed text-slate-600">
-            Severity is calculated from detected waste quantity, category hazard
-            weighting (Organic=1.2x, Plastic=1.0x, Dry Leaves/Biomass=0.7x),
-            affected area ratio, and nearby repeat reports.
+            <strong>Scientific 5-Pillar Model:</strong> Severity combines 25% Waste Quantity,
+            25% Non-Overlapping Visual Accumulation (raster union), 20% Category Hazard Risk
+            (Hazardous=1.5x, Organic=1.3x, Plastic=1.1x, Dry Biomass=0.75x), 15% Confidence Evidence,
+            and 15% Geospatial Repeat Hotspot History.
           </div>
         )}
       </div>

@@ -843,6 +843,7 @@ export const CitizenView: React.FC<CitizenViewProps> = ({
                     categoryStats={analysis.category_stats}
                     detections={analysis.detections}
                     inferenceMode={analysis.inference_mode}
+                    severityBreakdown={analysis.severity_breakdown}
                   />
 
                   {/* Location Status Box */}

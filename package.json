@@ -4,7 +4,7 @@
   "private": true,
   "description": "TerraSight AI - AI-Powered Waste Detection & Civic Reporting Platform",
   "scripts": {
-    "build": "npm --prefix frontend install && npm --prefix frontend run build",
+    "build": "node -e \"const fs=require('fs'),cp=require('child_process');const inFrontend=fs.existsSync('src/App.tsx');const dir=inFrontend?'.':'frontend';cp.execSync('npm install --include=dev',{cwd:dir,stdio:'inherit'});cp.execSync('npx vite build',{cwd:dir,stdio:'inherit'});if(!inFrontend&&fs.existsSync('frontend/dist')){fs.cpSync('frontend/dist','dist',{recursive:true});}\"",
     "dev": "npm --prefix frontend run dev"
   }
 }

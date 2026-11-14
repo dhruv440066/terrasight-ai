@@ -1550,7 +1550,7 @@ def create_incident(
 
     sev_score = round(float(payload.severity_score), 2)
     sev_tier = payload.severity_tier or determine_severity_tier(sev_score)
-    if sev_tier not in ("High", "Medium", "Low"):
+    if sev_tier not in ("Critical", "High", "Medium", "Low"):
         sev_tier = determine_severity_tier(sev_score)
 
     det_count = max(

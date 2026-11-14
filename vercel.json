@@ -1,32 +1,17 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "services": {
-    "frontend": {
-      "root": "frontend",
-      "framework": "vite",
-      "installCommand": "npm install --include=dev",
-      "buildCommand": "npm run build",
-      "outputDirectory": "dist",
-      "rewrites": [
-        { "source": "/((?!assets/).*)", "destination": "/index.html" }
-      ]
-    },
-    "api": {
-      "root": "api",
-      "framework": "fastapi",
-      "entrypoint": "index:app"
-    }
-  },
+  "buildCommand": "node -e \"const fs=require('fs'),cp=require('child_process');const inFrontend=fs.existsSync('src/App.tsx');const dir=inFrontend?'.':'frontend';cp.execSync('npm install --include=dev',{cwd:dir,stdio:'inherit'});cp.execSync('npx vite build',{cwd:dir,stdio:'inherit'});if(!inFrontend&&fs.existsSync('frontend/dist')){fs.cpSync('frontend/dist','dist',{recursive:true});}\"",
+  "outputDirectory": "dist",
   "rewrites": [
-    { "source": "/api/(.*)", "destination": { "service": "api" } },
-    { "source": "/api", "destination": { "service": "api" } },
-    { "source": "/health", "destination": { "service": "api" } },
-    { "source": "/reverse-geocode", "destination": { "service": "api" } },
-    { "source": "/auth/(.*)", "destination": { "service": "api" } },
-    { "source": "/uploads/(.*)", "destination": { "service": "api" } },
-    { "source": "/docs", "destination": { "service": "api" } },
-    { "source": "/redoc", "destination": { "service": "api" } },
-    { "source": "/openapi.json", "destination": { "service": "api" } },
-    { "source": "/(.*)", "destination": { "service": "frontend" } }
+    { "source": "/api/(.*)", "destination": "/api/index.py" },
+    { "source": "/api", "destination": "/api/index.py" },
+    { "source": "/health", "destination": "/api/index.py" },
+    { "source": "/reverse-geocode", "destination": "/api/index.py" },
+    { "source": "/auth/(.*)", "destination": "/api/index.py" },
+    { "source": "/uploads/(.*)", "destination": "/api/index.py" },
+    { "source": "/docs", "destination": "/api/index.py" },
+    { "source": "/redoc", "destination": "/api/index.py" },
+    { "source": "/openapi.json", "destination": "/api/index.py" },
+    { "source": "/((?!assets/).*)", "destination": "/index.html" }
   ]
 }

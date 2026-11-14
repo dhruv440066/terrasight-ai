@@ -26,6 +26,7 @@ Unified Hybrid Dual-YOLOv8 + Spectral ROI Waste Detection Engine supporting:
 import ast
 import io
 import logging
+import math
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -155,11 +156,14 @@ INDOOR_PORTRAIT_ANCHORS = {
 def determine_severity_tier(severity_score: float) -> str:
     """
     Map a numerical severity score [0, 100] to a municipal priority tier:
-        - High:   severity > 60.0
-        - Medium: 25.0 <= severity <= 60.0
-        - Low:    severity < 25.0
+        - Critical: severity >= 80.0
+        - High:     55.0 <= severity < 80.0
+        - Medium:   25.0 <= severity < 55.0
+        - Low:      severity < 25.0
     """
-    if severity_score > 60.0:
+    if severity_score >= 80.0:
+        return "Critical"
+    if severity_score >= 55.0:
         return "High"
     if severity_score >= 25.0:
         return "Medium"
@@ -299,55 +303,97 @@ def _extract_connected_components(
     return candidates
 
 
+def _compute_raster_union_ratio(
+    boxes: List[Dict[str, Any]],
+    width: int,
+    height: int,
+) -> float:
+    """Compute exact non-overlapping bounding-box union area fraction on a compact raster grid."""
+    if not boxes or width <= 0 or height <= 0:
+        return 0.0
+    gw, gh = min(128, max(1, width)), min(96, max(1, height))
+    mask = np.zeros((gh, gw), dtype=bool)
+    sx = gw / float(width)
+    sy = gh / float(height)
+    for b in boxes:
+        x1 = max(0, min(gw - 1, int(float(b.get("x1", 0.0)) * sx)))
+        y1 = max(0, min(gh - 1, int(float(b.get("y1", 0.0)) * sy)))
+        x2 = max(x1 + 1, min(gw, int(np.ceil(float(b.get("x2", 0.0)) * sx))))
+        y2 = max(y1 + 1, min(gh, int(np.ceil(float(b.get("y2", 0.0)) * sy))))
+        mask[y1:y2, x1:x2] = True
+    return float(np.mean(mask))
+
+
+# Scientifically weighted environmental & public health risk factors (Pillar 3)
+CATEGORY_RISK_WEIGHTS: Dict[str, float] = {
+    "Hazardous Waste": 1.50,
+    "Organic Waste": 1.30,
+    "Plastic Waste": 1.10,
+    "Metal": 1.00,
+    "Dry Leaves / Biomass": 0.75,
+    "Paper / Cardboard": 0.75,
+}
+
+
 def calculate_severity(
     detections: List[Dict[str, Any]],
     image_width: int,
     image_height: int,
     repeat_reports: int = 0,
+    legacy_mode: bool = False,
 ) -> Dict[str, Any]:
     """
     Calculate the CleanPath AI Severity Index and Severity Tier from detected bounding boxes.
-
-    Mathematical Model:
-        For each bounding box i:
-            BBox_Area_i = (x2 - x1) * (y2 - y1)
-            area_ratio_i = BBox_Area_i / (Image_Width * Image_Height)
-
-        Total Area_Ratio = Sum(BBox_Area_i) / (Image_Width * Image_Height)
-
-        For multiple detections across functional categories, the effective hazard
-        multiplier is the area-weighted average of individual category multipliers:
-            effective_multiplier = Sum(area_ratio_i * multiplier_i) / Area_Ratio
-
-        Severity Index:
-            Severity_Index = min(100.0, Area_Ratio * effective_multiplier * 100.0 + repeat_boost)
+    Supports 5-pillar scientific environmental assessment (default) or linear legacy model.
     """
     if image_width <= 0 or image_height <= 0 or not detections:
         return {
             "severity_score": 0.0,
             "severity_tier": "Low",
+            "prediction_reliability": "High",
             "total_area_ratio": 0.0,
             "effective_multiplier": 0.0,
             "object_count": 0,
             "repeat_report_boost": 0.0,
+            "breakdown": {
+                "quantity": {"weight_pct": 25, "raw_score": 0.0, "contribution": 0.0, "label": "0 detected waste objects"},
+                "accumulation": {"weight_pct": 25, "raw_score": 0.0, "contribution": 0.0, "label": "0.0% visual coverage"},
+                "risk": {"weight_pct": 20, "raw_score": 0.0, "contribution": 0.0, "label": "No hazard detected"},
+                "confidence": {"weight_pct": 15, "raw_score": 0.0, "contribution": 0.0, "label": "N/A"},
+                "hotspot": {"weight_pct": 15, "raw_score": 0.0, "contribution": 0.0, "label": f"{repeat_reports} prior report(s)"},
+            },
+            "explanation": "No waste detected in target scene. Environmental severity is zero.",
             "formula_explanation": (
-                "Severity is calculated from detected waste quantity, category hazard weighting "
-                "(Organic=1.2x, Plastic=1.0x, Dry Leaves/Biomass=0.7x), affected area ratio, and nearby repeat reports."
+                "5-Pillar severity model: 25% Quantity + 25% Accumulation Area + 20% Category Hazard "
+                "+ 15% Confidence Evidence + 15% Hotspot History."
             ),
         }
 
     total_image_area = float(image_width * image_height)
+    box_coords: List[Dict[str, float]] = []
+    category_list: List[str] = []
+    confidence_list: List[float] = []
     total_bbox_area = 0.0
     weighted_multiplier_sum = 0.0
 
     for det in detections:
         cls_name = det.get("class_name", "Plastic Waste")
         functional_cat = map_taco_class_to_category(cls_name)
-        multiplier = CATEGORY_MULTIPLIERS.get(functional_cat, 1.0)
+        category_list.append(functional_cat)
+        conf = float(det.get("confidence", 0.85))
+        confidence_list.append(conf)
 
         if "area_ratio" in det and det["area_ratio"] is not None and "bbox" not in det:
             box_area_ratio = max(0.0, float(det["area_ratio"]))
             box_area = box_area_ratio * total_image_area
+            side = math.sqrt(max(1.0, box_area))
+            cx, cy = image_width / 2.0, image_height / 2.0
+            box_dict = {
+                "x1": max(0.0, cx - side / 2.0),
+                "y1": max(0.0, cy - side / 2.0),
+                "x2": min(float(image_width), cx + side / 2.0),
+                "y2": min(float(image_height), cy + side / 2.0),
+            }
         else:
             bbox = det.get("bbox", {})
             x1 = float(bbox.get("x1", 0.0))
@@ -360,41 +406,140 @@ def calculate_severity(
             box_area_ratio = box_area / total_image_area
             if "area_ratio" not in det or det["area_ratio"] is None:
                 det["area_ratio"] = round(box_area_ratio, 4)
+            box_dict = {"x1": x1, "y1": y1, "x2": x2, "y2": y2}
 
+        box_coords.append(box_dict)
         total_bbox_area += box_area
+        multiplier = CATEGORY_MULTIPLIERS.get(functional_cat, 1.0)
         weighted_multiplier_sum += box_area * multiplier
 
-    if total_bbox_area <= 0.0:
+    # Legacy linear formula if explicitly requested
+    if legacy_mode:
+        if total_bbox_area <= 0.0:
+            return {
+                "severity_score": 0.0,
+                "severity_tier": "Low",
+                "total_area_ratio": 0.0,
+                "effective_multiplier": 0.0,
+                "object_count": len(detections),
+                "repeat_report_boost": 0.0,
+                "formula_explanation": "Legacy linear area-ratio model.",
+            }
+        area_ratio = total_bbox_area / total_image_area
+        effective_multiplier = weighted_multiplier_sum / total_bbox_area
+        repeat_boost = max(0, int(repeat_reports)) * 2.5
+        raw_severity = (area_ratio * effective_multiplier * 100.0) + repeat_boost
+        score = round(min(100.0, max(0.0, raw_severity)), 2)
+        tier = determine_severity_tier(score)
         return {
-            "severity_score": 0.0,
-            "severity_tier": "Low",
-            "total_area_ratio": 0.0,
-            "effective_multiplier": 0.0,
+            "severity_score": score,
+            "severity_tier": tier,
+            "total_area_ratio": round(area_ratio, 4),
+            "effective_multiplier": round(effective_multiplier, 4),
             "object_count": len(detections),
-            "repeat_report_boost": 0.0,
-            "formula_explanation": (
-                "Severity is calculated from detected waste quantity, category hazard weighting, "
-                "affected area ratio, and nearby repeat reports."
-            ),
+            "repeat_report_boost": round(repeat_boost, 2),
+            "formula_explanation": "Legacy linear area-ratio model.",
         }
 
-    area_ratio = total_bbox_area / total_image_area
-    effective_multiplier = weighted_multiplier_sum / total_bbox_area
-    repeat_boost = max(0, int(repeat_reports)) * 2.5
-    raw_severity = (area_ratio * effective_multiplier * 100.0) + repeat_boost
-    severity_score = round(min(100.0, max(0.0, raw_severity)), 2)
+    # 1. Pillar 1: Waste Quantity (25%)
+    n_count = len(detections)
+    s_quantity = 100.0 * (1.0 - math.exp(-n_count / 7.5))
+
+    # 2. Pillar 2: Waste Accumulation / Non-overlapping Coverage (25%)
+    union_ratio = _compute_raster_union_ratio(box_coords, image_width, image_height)
+    s_accumulation = 100.0 * (1.0 - math.exp(-union_ratio / 0.18))
+
+    # 3. Pillar 3: Category Risk (20%)
+    cat_risk_sum = sum(CATEGORY_RISK_WEIGHTS.get(c, 1.0) for c in category_list)
+    avg_cat_risk = cat_risk_sum / max(1, len(category_list))
+    distinct_categories = len(set(category_list))
+    diversity_bonus = 1.0 + 0.08 * (distinct_categories - 1)
+    effective_risk = avg_cat_risk * diversity_bonus
+    s_risk = min(100.0, max(0.0, ((effective_risk - 0.70) / (1.40 - 0.70)) * 100.0))
+
+    # 4. Pillar 4: Confidence-Adjusted Evidence (15%)
+    avg_conf = float(np.mean(confidence_list)) if confidence_list else 0.85
+    evidence_intensity = (s_quantity + s_accumulation) / 2.0
+    s_confidence = min(100.0, max(0.0, avg_conf * evidence_intensity))
+
+    # 5. Pillar 5: Geospatial Hotspot Context (15%)
+    repeats = max(0, int(repeat_reports))
+    s_hotspot = min(100.0, 100.0 * (1.0 - math.exp(-repeats / 4.5)))
+
+    # Weighted composite score
+    c_q = 0.25 * s_quantity
+    c_a = 0.25 * s_accumulation
+    c_r = 0.20 * s_risk
+    c_c = 0.15 * s_confidence
+    c_h = 0.15 * s_hotspot
+
+    raw_total = c_q + c_a + c_r + c_c + c_h
+    severity_score = round(min(100.0, max(0.0, raw_total)), 2)
     severity_tier = determine_severity_tier(severity_score)
+
+    reliability = "High" if avg_conf >= 0.80 else ("Moderate" if avg_conf >= 0.55 else "Preliminary")
+
+    top_cat = max(set(category_list), key=category_list.count) if category_list else "Waste"
+    explanation_parts = [
+        f"Assessed as {severity_tier} severity ({severity_score}/100) with {n_count} detected object(s) "
+        f"covering {round(union_ratio * 100.0, 1)}% non-overlapping visual footprint.",
+        f"Primary waste profile is {top_cat} (risk index {round(s_risk, 1)}/100).",
+        f"Model detection reliability is {reliability} ({round(avg_conf * 100.0, 1)}% average confidence).",
+    ]
+    if repeats > 0:
+        explanation_parts.append(f"Amplified by {repeats} prior report(s) in this hotspot vicinity (+{round(c_h, 1)} pts).")
+    explanation = " ".join(explanation_parts)
 
     return {
         "severity_score": severity_score,
         "severity_tier": severity_tier,
-        "total_area_ratio": round(area_ratio, 4),
-        "effective_multiplier": round(effective_multiplier, 4),
-        "object_count": len(detections),
-        "repeat_report_boost": round(repeat_boost, 2),
+        "prediction_reliability": reliability,
+        "breakdown": {
+            "quantity": {
+                "weight_pct": 25,
+                "raw_score": round(s_quantity, 1),
+                "contribution": round(c_q, 2),
+                "object_count": n_count,
+                "label": f"{n_count} detected waste object(s)",
+            },
+            "accumulation": {
+                "weight_pct": 25,
+                "raw_score": round(s_accumulation, 1),
+                "contribution": round(c_a, 2),
+                "coverage_pct": round(union_ratio * 100.0, 1),
+                "label": f"{round(union_ratio * 100.0, 1)}% visual accumulation footprint",
+            },
+            "risk": {
+                "weight_pct": 20,
+                "raw_score": round(s_risk, 1),
+                "contribution": round(c_r, 2),
+                "dominant_category": top_cat,
+                "label": f"Hazard risk: {top_cat} ({round(s_risk, 1)}/100)",
+            },
+            "confidence": {
+                "weight_pct": 15,
+                "raw_score": round(s_confidence, 1),
+                "contribution": round(c_c, 2),
+                "avg_confidence_pct": round(avg_conf * 100.0, 1),
+                "label": f"{round(avg_conf * 100.0, 1)}% detection confidence evidence",
+            },
+            "hotspot": {
+                "weight_pct": 15,
+                "raw_score": round(s_hotspot, 1),
+                "contribution": round(c_h, 2),
+                "repeat_count": repeats,
+                "label": f"{repeats} prior nearby reports",
+            },
+        },
+        "explanation": explanation,
+        # Backward-compatible metadata
+        "total_area_ratio": round(union_ratio, 4),
+        "effective_multiplier": round(effective_risk, 4),
+        "object_count": n_count,
+        "repeat_report_boost": round(c_h, 2),
         "formula_explanation": (
-            "Severity is calculated from detected waste quantity, category hazard weighting "
-            "(Organic=1.2x, Plastic=1.0x, Dry Leaves/Biomass=0.7x), affected area ratio, and nearby repeat reports."
+            "Multi-factor severity model: 25% Quantity + 25% Accumulation Area (raster union) + "
+            "20% Hazard Risk + 15% Confidence Evidence + 15% Geospatial Hotspot History."
         ),
     }
 

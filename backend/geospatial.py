@@ -37,6 +37,7 @@ DEFAULT_CLUSTER_RADIUS_METERS: float = float(
     os.getenv("HOTSPOT_RADIUS_METERS", "50.0")
 )
 SEVERITY_TIER_PRIORITY: Dict[str, int] = {
+    "Critical": 4,
     "High": 3,
     "Medium": 2,
     "Low": 1,

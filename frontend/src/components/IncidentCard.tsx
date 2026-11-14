@@ -43,6 +43,7 @@ export const IncidentCard: React.FC<IncidentCardProps> = ({
   const currentStepIndex = STATUS_ORDER[incident.status] ?? 0;
 
   const tierColors: Record<SeverityTier, string> = {
+    Critical: 'bg-rose-100 text-rose-800 border-rose-300 font-extrabold animate-pulse',
     High: 'bg-red-100 text-red-800 border-red-200',
     Medium: 'bg-amber-100 text-amber-800 border-amber-200',
     Low: 'bg-emerald-100 text-emerald-800 border-emerald-200',

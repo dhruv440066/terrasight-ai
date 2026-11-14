@@ -59,6 +59,7 @@ export const ReportDetailModal: React.FC<ReportDetailModalProps> = ({
   };
 
   const severityBadgeColor = (tier: string) => {
+    if (tier === 'Critical') return 'bg-rose-700 text-white font-extrabold animate-pulse';
     if (tier === 'High') return 'bg-red-600 text-white';
     if (tier === 'Medium') return 'bg-amber-500 text-slate-950';
     return 'bg-emerald-600 text-white';

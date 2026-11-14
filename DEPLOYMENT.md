@@ -227,7 +227,7 @@ Deploying **TerraSight AI** to **Vercel** provides instant global CDN speeds and
 1. **Push your code to GitHub**:
    ```bash
    git add .
-   git commit -m "Configure Vercel Services multi-app deployment"
+   git commit -m "Deploy TerraSight AI full-stack to Vercel"
    git push origin main
    ```
 
@@ -236,17 +236,21 @@ Deploying **TerraSight AI** to **Vercel** provides instant global CDN speeds and
    - Click **"Add New..."** -> **"Project"**.
    - Select **`dhruv440066/terrasight-ai`** from your repository list and click **"Import"**.
 
-3. **Verify Vercel Services Settings**:
-   - Vercel automatically reads `vercel.json` Services (`frontend` + `api`) from the repository root — leave **Root Directory** at the repository root (`.`) and keep **Framework Preset** as detected (do not import sub-folders individually).
-   - *(Optional)* Under **Environment Variables**, you can add:
-     - `DATABASE_URL`: Hosted Postgres URL (e.g. Neon/Supabase) for persistent storage across Vercel serverless functions (otherwise defaults to ephemeral `/tmp/cleanpath.db`).
-     - `DEMO_MODE`: Set `"true"` if you want 15 demo civic waste reports pre-seeded on startup.
-     - `VITE_API_URL`: Override only if using an external Render/Docker backend instead of the built-in `/api` service.
+3. **Configure Project Settings**:
+   - If Vercel displays *"Multiple applications detected in this directory"*, you can either:
+     - **Option 1 (Recommended Single-Click Full-Stack)**: Leave **Root Directory** as the repository root (`./`). The unified `vercel.json` and root `package.json` automatically install dependencies, build the Vite frontend into `dist/`, and bind `/api/...` to the Python serverless function `api/index.py` with `onnxruntime`.
+     - **Option 2 (Standalone Frontend + External Backend)**: If you click *"Import single project"* next to `frontend`, set Framework Preset to **Vite**, and set `VITE_API_URL` under Environment Variables to your external backend (e.g. `https://terrasight-api.onrender.com`).
+   - *(Optional Environment Variables)*:
+     - `DATABASE_URL`: Hosted Postgres URL (e.g. Neon, Supabase, Railway) for persistent storage across serverless function invocations (defaults to SQLite `/tmp/cleanpath.db`).
+     - `DEMO_MODE`: Set to `"false"` for clean citizen reporting or `"true"` to seed demo reports on boot.
+     - `CONFIDENCE_THRESHOLD`: Set to `0.18` (default) for waste detection sensitivity.
 
 4. **Click "Deploy"**:
-   - Both `frontend` and `api` services build and deploy together in under 60 seconds!
+   - The Vite frontend builds in ~10 seconds.
+   - Vercel provisions Python 3.12 with `onnxruntime`, `fastapi`, and the Dual-YOLOv8 ONNX models (`best.onnx` + `yolov8n.onnx`).
+   - No `tsc: command not found` or `cd: frontend: No such file or directory` errors will occur.
 
 5. **Log In and Test**:
    - **Citizen Login**: `citizen` / `citizen123`
    - **Officer Login**: `officer` / `officer123`
-   - Use the **"Server Config"** button in the navigation bar anytime to verify connection status (`/api/health`) or point to any custom API.
+   - Upload any waste photo: view real YOLOv8 detections (not fallback!), multi-class breakdown, and the upgraded 5-pillar severity score with full explainability.

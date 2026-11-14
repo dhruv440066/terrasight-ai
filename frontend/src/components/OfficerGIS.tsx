@@ -62,6 +62,12 @@ const SEVERITY_COLORS: Record<
   SeverityTier,
   { hex: string; badge: string; dot: string; ring: string }
 > = {
+  Critical: {
+    hex: '#BE123C',
+    badge: 'bg-rose-700 text-white font-extrabold animate-pulse',
+    dot: '🚨',
+    ring: 'border-rose-600 bg-rose-50 text-rose-950',
+  },
   High: {
     hex: '#DC2626',
     badge: 'bg-red-600 text-white',

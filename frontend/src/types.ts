@@ -4,7 +4,7 @@
 
 export type UserRole = 'citizen' | 'officer';
 
-export type SeverityTier = 'High' | 'Medium' | 'Low';
+export type SeverityTier = 'Critical' | 'High' | 'Medium' | 'Low';
 
 export type LocationSource =
   | 'EXIF'
@@ -70,9 +70,26 @@ export interface CategoryStat {
   max_confidence: number;
 }
 
+export interface PillarMetric {
+  weight_pct: number;
+  raw_score: number;
+  contribution: number;
+  label: string;
+  [key: string]: any;
+}
+
 export interface SeverityBreakdown {
   severity_score: number;
   severity_tier: SeverityTier;
+  prediction_reliability?: 'High' | 'Moderate' | 'Preliminary';
+  breakdown?: {
+    quantity?: PillarMetric;
+    accumulation?: PillarMetric;
+    risk?: PillarMetric;
+    confidence?: PillarMetric;
+    hotspot?: PillarMetric;
+  };
+  explanation?: string;
   total_area_ratio?: number;
   effective_multiplier?: number;
   object_count?: number;

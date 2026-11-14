@@ -150,8 +150,9 @@ class TestCleanPathAI(unittest.TestCase):
     # ==========================================================================
 
     def test_severity_low_medium_high_tiers(self) -> None:
-        """Verify Low (<25%), Medium (25%-60%), and High (>60%) severity calculations."""
-        low_res = calculate_severity(
+        """Verify Low (<25%), Medium (25%-60%), High (>60%), and Critical (>=80%) calculations."""
+        # 1. Test legacy mode backward compatibility
+        low_legacy = calculate_severity(
             detections=[
                 {
                     "class_name": "Plastic Waste",
@@ -160,11 +161,12 @@ class TestCleanPathAI(unittest.TestCase):
             ],
             image_width=1000,
             image_height=100,
+            legacy_mode=True,
         )
-        self.assertAlmostEqual(low_res["severity_score"], 10.0, places=2)
-        self.assertEqual(low_res["severity_tier"], "Low")
+        self.assertAlmostEqual(low_legacy["severity_score"], 10.0, places=2)
+        self.assertEqual(low_legacy["severity_tier"], "Low")
 
-        med_res = calculate_severity(
+        med_legacy = calculate_severity(
             detections=[
                 {
                     "class_name": "Plastic Waste",
@@ -173,11 +175,12 @@ class TestCleanPathAI(unittest.TestCase):
             ],
             image_width=1000,
             image_height=100,
+            legacy_mode=True,
         )
-        self.assertAlmostEqual(med_res["severity_score"], 40.0, places=2)
-        self.assertEqual(med_res["severity_tier"], "Medium")
+        self.assertAlmostEqual(med_legacy["severity_score"], 40.0, places=2)
+        self.assertEqual(med_legacy["severity_tier"], "Medium")
 
-        high_res = calculate_severity(
+        high_legacy = calculate_severity(
             detections=[
                 {
                     "class_name": "Organic Waste",
@@ -186,14 +189,49 @@ class TestCleanPathAI(unittest.TestCase):
             ],
             image_width=1000,
             image_height=100,
+            legacy_mode=True,
         )
-        self.assertAlmostEqual(high_res["severity_score"], 72.0, places=2)
-        self.assertEqual(high_res["severity_tier"], "High")
+        self.assertAlmostEqual(high_legacy["severity_score"], 72.0, places=2)
+        self.assertEqual(high_legacy["severity_tier"], "High")
 
+        # 2. Test upgraded 5-pillar severity engine
+        # Zero waste -> 0.0 Low
+        clean_res = calculate_severity([], 1000, 1000)
+        self.assertEqual(clean_res["severity_score"], 0.0)
+        self.assertEqual(clean_res["severity_tier"], "Low")
+
+        # Single isolated wrapper -> < 25.0 Low
+        wrapper_res = calculate_severity(
+            detections=[{"class_name": "Plastic Waste", "confidence": 0.85, "bbox": {"x1": 10, "y1": 10, "x2": 50, "y2": 50}}],
+            image_width=1000,
+            image_height=1000,
+        )
+        self.assertLess(wrapper_res["severity_score"], 25.0)
+        self.assertEqual(wrapper_res["severity_tier"], "Low")
+        self.assertIn("breakdown", wrapper_res)
+        self.assertIn("quantity", wrapper_res["breakdown"])
+
+        # 16-object user benchmark scene -> > 60.0 High
+        benchmark_dets = [{"class_name": "Plastic Waste", "confidence": 0.82, "bbox": {"x1": 100 + (i%4)*150, "y1": 100 + (i//4)*120, "x2": 220 + (i%4)*150, "y2": 200 + (i//4)*120}} for i in range(14)]
+        benchmark_dets.extend([{"class_name": "Organic Waste", "confidence": 0.85, "bbox": {"x1": 200 + i*150, "y1": 500, "x2": 320 + i*150, "y2": 600}} for i in range(2)])
+        scene_res = calculate_severity(benchmark_dets, 1000, 1000)
+        self.assertGreater(scene_res["severity_score"], 60.0)
+        self.assertEqual(scene_res["severity_tier"], "High")
+
+        # Overflowing dump -> >= 80.0 Critical
+        dump_dets = [{"class_name": "Plastic Waste", "confidence": 0.90, "bbox": {"x1": (i%5)*200, "y1": (i//5)*150, "x2": (i%5)*200 + 190, "y2": (i//5)*150 + 140}} for i in range(30)]
+        dump_res = calculate_severity(dump_dets, 1000, 1000, repeat_reports=8)
+        self.assertGreaterEqual(dump_res["severity_score"], 80.0)
+        self.assertEqual(dump_res["severity_tier"], "Critical")
+
+        # Tier boundary checks (Low: <25, Medium: 25-54.9, High: 55-79.9, Critical: >=80)
         self.assertEqual(determine_severity_tier(24.9), "Low")
         self.assertEqual(determine_severity_tier(25.0), "Medium")
-        self.assertEqual(determine_severity_tier(60.0), "Medium")
-        self.assertEqual(determine_severity_tier(60.1), "High")
+        self.assertEqual(determine_severity_tier(54.9), "Medium")
+        self.assertEqual(determine_severity_tier(55.0), "High")
+        self.assertEqual(determine_severity_tier(79.9), "High")
+        self.assertEqual(determine_severity_tier(80.0), "Critical")
+        self.assertEqual(determine_severity_tier(95.0), "Critical")
 
     # ==========================================================================
     # 4. DBSCAN GEOSPATIAL CLUSTERING TESTS
@@ -224,7 +262,7 @@ class TestCleanPathAI(unittest.TestCase):
         self.assertEqual(len(clusters), 2)
         self.assertEqual(clusters[0]["report_count"], 2)
         self.assertEqual(clusters[0]["maximum_severity"], 82.0)
-        self.assertEqual(clusters[0]["severity_tier"], "High")
+        self.assertEqual(clusters[0]["severity_tier"], "Critical")
         self.assertEqual(clusters[1]["report_count"], 1)
         self.assertEqual(clusters[1]["severity_tier"], "Low")
 
