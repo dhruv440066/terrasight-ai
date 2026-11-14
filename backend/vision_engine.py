@@ -83,19 +83,14 @@ COCO_CLASS_NAMES: Tuple[str, ...] = (
 )
 
 # COCO classes mapped to (functional_category, display_subclass, min_conf)
+# Note: Personal belongings (backpack, handbag, umbrella, suitcase) and fragile items
+# like vases/wine glasses are strictly excluded to prevent transparent plastic misclassification
 COCO_WASTE_CLASS_MAP: Dict[str, Tuple[str, str, float]] = {
     "bottle": ("Plastic Waste", "Plastic bottle", 0.22),
     "cup": ("Plastic Waste", "Disposable cup", 0.24),
-    "wine glass": ("Plastic Waste", "Glass bottle & jar", 0.30),
-    "bowl": ("Plastic Waste", "Mixed litter", 0.34),
-    "handbag": ("Plastic Waste", "Plastic bag & film", 0.32),
-    "backpack": ("Plastic Waste", "Plastic bag & film", 0.34),
-    "suitcase": ("Plastic Waste", "Mixed litter", 0.35),
-    "umbrella": ("Plastic Waste", "Mixed litter", 0.36),
-    "vase": ("Plastic Waste", "Glass bottle & jar", 0.36),
-    "fork": ("Plastic Waste", "Bottle cap, straw & lid", 0.30),
-    "knife": ("Plastic Waste", "Bottle cap, straw & lid", 0.30),
-    "spoon": ("Plastic Waste", "Bottle cap, straw & lid", 0.30),
+    "fork": ("Plastic Waste", "Bottle cap, straw & lid", 0.28),
+    "knife": ("Plastic Waste", "Bottle cap, straw & lid", 0.28),
+    "spoon": ("Plastic Waste", "Bottle cap, straw & lid", 0.28),
     "banana": ("Organic Waste", "Food & organic waste", 0.22),
     "apple": ("Organic Waste", "Food & organic waste", 0.24),
     "sandwich": ("Organic Waste", "Food & organic waste", 0.24),
@@ -107,38 +102,53 @@ COCO_WASTE_CLASS_MAP: Dict[str, Tuple[str, str, float]] = {
     "donut": ("Organic Waste", "Food & organic waste", 0.24),
     "cake": ("Organic Waste", "Food & organic waste", 0.26),
     "potted plant": ("Dry Leaves / Biomass", "Dry leaves & foliage", 0.34),
-    "book": ("Dry Leaves / Biomass", "Paper & paper bag", 0.32),
+    "book": ("Dry Leaves / Biomass", "Paper & paper bag", 0.30),
 }
 
-# COCO classes that represent humans, vehicles, pets, or indoor furniture/electronics
-COCO_NON_WASTE_CLASSES = {
-    "person",
+# COCO classes that represent vehicles, humans, pets, or indoor electronics/furniture
+COCO_VEHICLE_CLASSES = {
     "car",
     "truck",
     "bus",
     "motorcycle",
     "bicycle",
-    "laptop",
-    "chair",
-    "couch",
-    "bed",
-    "tv",
+    "train",
+    "airplane",
+    "boat",
+}
+
+COCO_HUMAN_AND_PET_CLASSES = {
+    "person",
     "cat",
     "dog",
+    "bird",
+    "horse",
+    "sheep",
+    "cow",
+}
+
+COCO_FURNITURE_ELECTRONICS = {
+    "laptop",
+    "tv",
     "cell phone",
-    "dining table",
     "keyboard",
     "mouse",
+    "couch",
+    "bed",
 }
+
+COCO_NON_WASTE_CLASSES = (
+    COCO_VEHICLE_CLASSES
+    | COCO_HUMAN_AND_PET_CLASSES
+    | COCO_FURNITURE_ELECTRONICS
+    | {"backpack", "handbag", "suitcase", "umbrella", "tie", "wine glass", "vase"}
+)
 
 INDOOR_PORTRAIT_ANCHORS = {
     "laptop",
-    "chair",
     "couch",
-    "bed",
     "tv",
-    "dining table",
-    "keyboard",
+    "cell phone",
 }
 
 
@@ -861,7 +871,6 @@ class VisionEngine:
         # Trust explicit high-confidence granular item predictions directly
         high_trust_subclasses = {
             "Plastic bottle",
-            "Glass bottle & jar",
             "Drink & metal can",
             "Disposable cup",
             "Styrofoam piece",
@@ -872,7 +881,16 @@ class VisionEngine:
             "Bottle cap, straw & lid",
             "Plastic wrapper",
         }
-        if is_granular_model and initial_subclass in high_trust_subclasses and confidence >= 0.24:
+        if is_granular_model and initial_subclass in high_trust_subclasses and confidence >= 0.20:
+            return initial_category, initial_subclass, confidence
+
+        if initial_subclass == "Glass bottle & jar":
+            # Glass bottle/jar requires high confidence (>= 0.45) to avoid false positives on transparent plastic.
+            # Below 0.45, it is safely classified as Plastic bottle.
+            if confidence >= 0.45:
+                return "Plastic Waste", "Glass bottle & jar", confidence
+            else:
+                return "Plastic Waste", "Plastic bottle", confidence
             return initial_category, initial_subclass, confidence
 
         h = roi_hsv[:, :, 0].astype(np.float32)
@@ -1090,7 +1108,10 @@ class VisionEngine:
                     box_area = float(max(0, x2 - x1) * max(0, y2 - y1))
 
                     if cls_low in COCO_NON_WASTE_CLASSES:
-                        non_waste_boxes.append(box_dict)
+                        # Only living subjects (person, cat, dog) suppress detections inside their body
+                        # Furniture, vehicles, and backgrounds (bed/couch/car/table) NEVER suppress waste
+                        if cls_low in COCO_HUMAN_AND_PET_CLASSES:
+                            non_waste_boxes.append(box_dict)
                         if cls_low == "person":
                             person_boxes.append(box_dict)
                         if cls_low in INDOOR_PORTRAIT_ANCHORS:
@@ -1101,39 +1122,26 @@ class VisionEngine:
                         mapped_cat, mapped_sub, min_req_conf = COCO_WASTE_CLASS_MAP[cls_low]
                         if conf < min_req_conf:
                             continue
-                        if box_area < total_area * 0.0012 or box_area > total_area * 0.42:
+                        if box_area < total_area * 0.0002 or box_area > total_area * 0.75:
                             continue
                         coco_waste_candidates.append(
                             {
                                 "class_name": mapped_cat,
                                 "subclass": mapped_sub,
-                                "confidence": round(min(0.96, conf + 0.08), 2),
+                                "confidence": round(float(conf), 2),
                                 "bbox": box_dict,
                                 "area_ratio": round(box_area / total_area, 4),
-                                "_score_boost": 0.02,
+                                "_score_boost": 0.0,
                             }
                         )
             except Exception as exc:
                 logger.warning("Auxiliary COCO YOLO pass error: %s", exc)
 
         person_union = self._compute_boxes_union_ratio(person_boxes, width, height)
-        indoor_union = self._compute_boxes_union_ratio(indoor_boxes, width, height)
-
-        is_portrait_or_indoor = (person_union >= 0.30) or (
-            person_union >= 0.14 and indoor_union >= 0.04
-        ) or (indoor_union >= 0.20)
-
-        if is_portrait_or_indoor:
-            logger.info(
-                "Suppressed waste pile detection on non-waste/portrait scene (person=%.2f, indoor=%.2f)",
-                person_union,
-                indoor_union,
-            )
-            return [], True
 
         raw_detections: List[Dict[str, Any]] = []
         for cw in coco_waste_candidates:
-            if any(_compute_containment(cw["bbox"], nw) > 0.48 for nw in non_waste_boxes):
+            if any(_compute_containment(cw["bbox"], nw) > 0.60 for nw in non_waste_boxes):
                 continue
             raw_detections.append(cw)
 
@@ -1145,13 +1153,13 @@ class VisionEngine:
             is_granular = len(names_map) >= 10 or (not names_map)
 
             passes: List[Tuple[Image.Image, int, int, float, float, float]] = [
-                (pil_img, 0, 0, max(0.18, CONFIDENCE_THRESHOLD), 0.03, 0.58)
+                (pil_img, 0, 0, max(0.15, CONFIDENCE_THRESHOLD - 0.03), 0.03, 0.85)
             ]
 
             # Add foreground crop to zoom into dense roadside piles
             if max(width, height) >= 420:
                 fx1 = int(width * 0.05)
-                fy1 = int(height * 0.22)
+                fy1 = int(height * 0.20)
                 fx2 = int(width * 0.95)
                 fy2 = int(height * 0.96)
                 if fx2 - fx1 >= 240 and fy2 - fy1 >= 200:
@@ -1160,9 +1168,9 @@ class VisionEngine:
                             pil_img.crop((fx1, fy1, fx2, fy2)),
                             fx1,
                             fy1,
-                            max(0.22, CONFIDENCE_THRESHOLD + 0.04),
+                            max(0.18, CONFIDENCE_THRESHOLD),
                             0.0,
-                            0.45,
+                            0.75,
                         )
                     )
 
@@ -1184,9 +1192,9 @@ class VisionEngine:
                             pil_img.crop((tx1, ty1, tx2, ty2)),
                             tx1,
                             ty1,
-                            max(0.24, CONFIDENCE_THRESHOLD + 0.06),
+                            max(0.16, CONFIDENCE_THRESHOLD),
                             0.0,
-                            0.36,
+                            0.65,
                         )
                     )
 
@@ -1213,14 +1221,14 @@ class VisionEngine:
 
                         box_area = float(bw * bh)
                         area_frac = box_area / total_area
-                        # Drop sub-pixel noise or gigantic background captures
-                        max_allowed = 0.65 if idx_pass == 0 and conf >= 0.40 else max_area_frac
-                        if area_frac < 0.0010 or area_frac > max_allowed:
+                        # Allow small litter down to 0.00015 (captures small wrappers, caps, straws)
+                        max_allowed = 0.85 if idx_pass == 0 and conf >= 0.35 else max_area_frac
+                        if area_frac < 0.00015 or area_frac > max_allowed:
                             continue
 
                         bbox_dict = {"x1": gx1, "y1": gy1, "x2": gx2, "y2": gy2}
-                        # Reject boxes overlapping cars, people, laptops, furniture, etc.
-                        if any(_compute_containment(bbox_dict, nw) > 0.48 for nw in non_waste_boxes):
+                        # Reject boxes overlapping people or pets (waste near vehicles is retained)
+                        if any(_compute_containment(bbox_dict, nw) > 0.60 for nw in non_waste_boxes):
                             continue
 
                         raw_sub = (

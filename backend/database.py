@@ -215,6 +215,8 @@ class Incident(Base):
     original_filename = Column(String(255), nullable=True)
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
+    exif_latitude = Column(Float, nullable=True)
+    exif_longitude = Column(Float, nullable=True)
     location_source = Column(
         String(32), nullable=False, default="MANUAL"
     )  # EXIF | MANUAL | CURRENT_LOCATION
@@ -361,6 +363,8 @@ def run_schema_migrations() -> None:
         ("incidents", "original_filename", "VARCHAR(255)"),
         ("incidents", "address", "VARCHAR(512)"),
         ("incidents", "description", "TEXT"),
+        ("incidents", "exif_latitude", "FLOAT"),
+        ("incidents", "exif_longitude", "FLOAT"),
         ("hotspots", "duplicate_count", "INTEGER DEFAULT 0"),
         ("dispatches", "vehicle_number", "VARCHAR(64)"),
         ("dispatches", "started_at", "DATETIME"),

@@ -33,6 +33,7 @@ import { IncidentCard } from './IncidentCard';
 import { MapPicker } from './MapPicker';
 import { ReportDetailModal } from './ReportDetailModal';
 import { SeverityCard } from './SeverityCard';
+import { extractExifGpsFromBlob } from '../utils/exifParser';
 
 interface CitizenViewProps {
   user: UserProfile | null;
@@ -146,6 +147,8 @@ export const CitizenView: React.FC<CitizenViewProps> = ({
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
   const [latitude, setLatitude] = useState<number | null>(null);
   const [longitude, setLongitude] = useState<number | null>(null);
+  const [exifLatitude, setExifLatitude] = useState<number | null>(null);
+  const [exifLongitude, setExifLongitude] = useState<number | null>(null);
   const [locationSource, setLocationSource] = useState<LocationSource>('MANUAL');
   const [address, setAddress] = useState<string>('');
   const [description, setDescription] = useState<string>('');
@@ -275,20 +278,49 @@ export const CitizenView: React.FC<CitizenViewProps> = ({
 
     setAnalyzing(true);
     try {
-      const fileToAnalyze = await compressImageForUpload(file);
+      // 1. Client-side EXIF GPS extraction directly from raw binary File
+      let clientExifLat: number | null = null;
+      let clientExifLon: number | null = null;
+      try {
+        const clientGps = await extractExifGpsFromBlob(file);
+        if (clientGps && typeof clientGps.latitude === 'number' && typeof clientGps.longitude === 'number') {
+          clientExifLat = clientGps.latitude;
+          clientExifLon = clientGps.longitude;
+        }
+      } catch (exifErr) {
+        console.warn('Client-side EXIF parser notice:', exifErr);
+      }
+
+      // 2. Send pristine raw file to preserve metadata; compress only if file exceeds 4.2MB limit
+      let fileToAnalyze = file;
+      if (file.size > 4.2 * 1024 * 1024) {
+        fileToAnalyze = await compressImageForUpload(file);
+      }
+
       const result = await analyzeWasteImageApi(fileToAnalyze);
       setAnalysis(result);
       setAddress(result.address || '');
-      if (
-        result.gps.source === 'EXIF' &&
-        result.gps.latitude !== null &&
-        result.gps.longitude !== null
-      ) {
-        setLatitude(result.gps.latitude);
-        setLongitude(result.gps.longitude);
+
+      // 3. Resolve verified coordinates from backend EXIF or client-side binary recovery
+      const resolvedExifLat =
+        result.gps?.latitude !== null && result.gps?.latitude !== undefined
+          ? result.gps.latitude
+          : clientExifLat;
+      const resolvedExifLon =
+        result.gps?.longitude !== null && result.gps?.longitude !== undefined
+          ? result.gps.longitude
+          : clientExifLon;
+
+      if (resolvedExifLat !== null && resolvedExifLon !== null) {
+        setExifLatitude(resolvedExifLat);
+        setExifLongitude(resolvedExifLon);
+        setLatitude(resolvedExifLat);
+        setLongitude(resolvedExifLon);
         setLocationSource('EXIF');
         setShowManualMapOverride(false);
       } else {
+        setExifLatitude(null);
+        setExifLongitude(null);
         setLatitude(28.6139);
         setLongitude(77.209);
         setLocationSource('MANUAL');
@@ -376,6 +408,8 @@ export const CitizenView: React.FC<CitizenViewProps> = ({
         original_filename: analysis.original_filename,
         latitude,
         longitude,
+        exif_latitude: exifLatitude,
+        exif_longitude: exifLongitude,
         location_source: locationSource,
         address: address || undefined,
         description: description.trim() || undefined,
@@ -423,6 +457,9 @@ export const CitizenView: React.FC<CitizenViewProps> = ({
     setError(null);
     setLatitude(null);
     setLongitude(null);
+    setExifLatitude(null);
+    setExifLongitude(null);
+    setLocationSource('MANUAL');
     setDescription('');
   };
 
@@ -815,7 +852,7 @@ export const CitizenView: React.FC<CitizenViewProps> = ({
                       Location Status
                     </h3>
 
-                    {analysis.gps.source === 'EXIF' && !showManualMapOverride ? (
+                    {(locationSource === 'EXIF_GPS' || locationSource === 'EXIF' || (analysis.gps && (analysis.gps.source === 'EXIF' || analysis.gps.source === 'EXIF_GPS') && analysis.gps.latitude !== null)) && !showManualMapOverride ? (
                       <div className="space-y-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3.5 text-xs">
                         <div className="flex items-center gap-1.5 font-bold text-emerald-800">
                           <CheckCircle2 className="h-4 w-4 text-emerald-600" />
@@ -851,14 +888,17 @@ export const CitizenView: React.FC<CitizenViewProps> = ({
                         <div className="flex items-center gap-1.5 font-bold">
                           <AlertTriangle className="h-4 w-4 text-amber-600" />
                           <span>
-                            {analysis.gps.source === 'EXIF'
+                            {locationSource === 'CURRENT_LOCATION'
+                              ? 'Device GPS / Current Location Active'
+                              : showManualMapOverride
                               ? 'Manual / Interactive Map Mode Active'
                               : 'EXIF GPS not found in image'}
                           </span>
                         </div>
                         <p className="mt-1 text-amber-800">
-                          Confirm or adjust the waste coordinates below using Current
-                          Location or by dragging the red pin on the map.
+                          {locationSource === 'CURRENT_LOCATION'
+                            ? 'Coordinates obtained from your device location. Adjust on the map below if needed.'
+                            : 'Confirm or adjust the waste coordinates below using Current Location or by dragging the red pin on the map.'}
                         </p>
                       </div>
                     )}

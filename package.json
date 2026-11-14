@@ -1,0 +1,10 @@
+{
+  "name": "terrasight-ai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TerraSight AI - AI-Powered Waste Detection & Civic Reporting Platform",
+  "scripts": {
+    "build": "npm --prefix frontend install && npm --prefix frontend run build",
+    "dev": "npm --prefix frontend run dev"
+  }
+}

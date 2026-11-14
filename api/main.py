@@ -185,7 +185,9 @@ class IncidentCreateRequest(BaseModel):
     original_filename: Optional[str] = Field(default=None)
     latitude: float = Field(..., ge=-90.0, le=90.0)
     longitude: float = Field(..., ge=-180.0, le=180.0)
-    location_source: str = Field(default="MANUAL")
+    exif_latitude: Optional[float] = Field(default=None, ge=-90.0, le=90.0)
+    exif_longitude: Optional[float] = Field(default=None, ge=-180.0, le=180.0)
+    location_source: str = Field(default="MANUAL_PIN")
     address: Optional[str] = Field(default=None, max_length=512)
     description: Optional[str] = Field(default=None, max_length=2000)
     detected_categories: Union[List[str], List[Dict[str, Any]], str] = Field(
@@ -420,6 +422,8 @@ def serialize_incident(
         "original_filename": getattr(incident, "original_filename", None) or fallback_original_name,
         "latitude": lat_val,
         "longitude": lon_val,
+        "exif_latitude": getattr(incident, "exif_latitude", None),
+        "exif_longitude": getattr(incident, "exif_longitude", None),
         "location_source": incident.location_source,
         "address": address_val,
         "description": getattr(incident, "description", None) or "",
@@ -1418,7 +1422,9 @@ def analyze_incident_image(
         "gps": gps_result,
         "latitude": gps_result["latitude"],
         "longitude": gps_result["longitude"],
-        "location_source": gps_result["source"],
+        "exif_latitude": gps_result["latitude"],
+        "exif_longitude": gps_result["longitude"],
+        "location_source": "EXIF" if (gps_result.get("source") in ("EXIF", "EXIF_GPS") and gps_result["latitude"] is not None) else "MANUAL",
         "address": geo_info["address"],
     }
 
@@ -1458,7 +1464,11 @@ def create_incident(
         )
 
     loc_source = (payload.location_source or "MANUAL").strip().upper()
-    if loc_source not in ("EXIF", "MANUAL", "CURRENT_LOCATION"):
+    if loc_source in ("EXIF", "EXIF_GPS"):
+        loc_source = "EXIF"
+    elif loc_source in ("CURRENT_LOCATION", "GPS"):
+        loc_source = "CURRENT_LOCATION"
+    else:
         loc_source = "MANUAL"
 
     categories_list: List[str] = []
@@ -1536,6 +1546,8 @@ def create_incident(
             original_filename=resolved_original_filename,
             latitude=lat_val,
             longitude=lon_val,
+            exif_latitude=round(float(payload.exif_latitude), 6) if payload.exif_latitude is not None else None,
+            exif_longitude=round(float(payload.exif_longitude), 6) if payload.exif_longitude is not None else None,
             location_source=loc_source,
             address=address_val,
             description=(payload.description or "").strip(),

@@ -276,6 +276,8 @@ export interface CreateIncidentPayload {
   original_filename?: string;
   latitude: number;
   longitude: number;
+  exif_latitude?: number | null;
+  exif_longitude?: number | null;
   location_source: LocationSource;
   address?: string;
   description?: string;

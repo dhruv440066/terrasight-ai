@@ -6,7 +6,12 @@ export type UserRole = 'citizen' | 'officer';
 
 export type SeverityTier = 'High' | 'Medium' | 'Low';
 
-export type LocationSource = 'EXIF' | 'MANUAL' | 'CURRENT_LOCATION';
+export type LocationSource =
+  | 'EXIF'
+  | 'EXIF_GPS'
+  | 'MANUAL'
+  | 'MANUAL_PIN'
+  | 'CURRENT_LOCATION';
 
 export type IncidentStatus =
   | 'SUBMITTED'
@@ -101,6 +106,8 @@ export interface AnalysisResponse {
   gps: GpsExtractionResult;
   latitude: number | null;
   longitude: number | null;
+  exif_latitude?: number | null;
+  exif_longitude?: number | null;
   location_source: LocationSource;
   address?: string;
 }
@@ -148,6 +155,8 @@ export interface IncidentRecord {
   original_filename?: string;
   latitude: number;
   longitude: number;
+  exif_latitude?: number | null;
+  exif_longitude?: number | null;
   location_source: LocationSource;
   address?: string;
   description?: string;
