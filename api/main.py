@@ -158,6 +158,23 @@ class RegisterRequest(BaseModel):
             raise ValueError("Role must be 'citizen' or 'officer'")
         return "officer" if normalized == "admin" else normalized
 
+    @field_validator("email")
+    @classmethod
+    def validate_email_format(cls, value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        cleaned = value.strip().lower()
+        if "@" not in cleaned or "." not in cleaned.split("@")[-1]:
+            raise ValueError("Invalid email address format.")
+        return cleaned
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_strength(cls, value: str) -> str:
+        if len(value.strip()) < 6:
+            raise ValueError("Password must be at least 6 characters.")
+        return value
+
 
 class LoginRequest(BaseModel):
     username: str = Field(..., min_length=1, description="Username or email address")
@@ -1340,6 +1357,32 @@ def login_user(
 def get_me(current_user: User = Depends(get_current_user)) -> User:
     """Return the currently authenticated user's profile."""
     return current_user
+
+
+@app.post(
+    "/auth/refresh",
+    response_model=AuthResponse,
+    tags=["Authentication"],
+    summary="Refresh an existing valid JWT token to extend the active session",
+)
+@app.post(
+    "/api/auth/refresh",
+    response_model=AuthResponse,
+    tags=["Authentication"],
+    include_in_schema=False,
+)
+def refresh_token(
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Re-issue a fresh 24-hour access token for the authenticated user."""
+    token = create_access_token(
+        data={"sub": current_user.username, "role": current_user.role, "user_id": current_user.id}
+    )
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": current_user,
+    }
 
 
 # ==============================================================================

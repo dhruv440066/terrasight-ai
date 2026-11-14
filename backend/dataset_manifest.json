@@ -1,0 +1,118 @@
+{
+  "project": "TerraSight AI V2 - Environmental Waste Detection",
+  "version": "2.0.0",
+  "last_updated": "2026-11-14",
+  "target_taxonomy": {
+    "num_classes": 13,
+    "classes": [
+      "Plastic bottle",
+      "Glass bottle & jar",
+      "Drink & metal can",
+      "Plastic bag & film",
+      "Plastic wrapper",
+      "Disposable cup",
+      "Styrofoam piece",
+      "Bottle cap, straw & lid",
+      "Food & takeout container",
+      "Cardboard carton",
+      "Paper & paper bag",
+      "Cigarette",
+      "Mixed litter"
+    ],
+    "functional_categories": {
+      "Plastic Waste": [
+        "Plastic bottle",
+        "Glass bottle & jar",
+        "Drink & metal can",
+        "Plastic bag & film",
+        "Plastic wrapper",
+        "Disposable cup",
+        "Styrofoam piece",
+        "Bottle cap, straw & lid",
+        "Mixed litter"
+      ],
+      "Organic Waste": [
+        "Food & takeout container"
+      ],
+      "Dry Leaves / Biomass": [
+        "Cardboard carton",
+        "Paper & paper bag",
+        "Cigarette"
+      ]
+    }
+  },
+  "sources": [
+    {
+      "name": "TACO (Trash Annotations in Context)",
+      "publisher": "Pedro F. Proença & Pedro Simões (Imperial College London / Univ. Lisbon)",
+      "source_url": "https://github.com/pedropro/TACO",
+      "paper": "TACO: Trash Annotations in Context for Litter Detection (arXiv:2003.06975)",
+      "license": "Creative Commons Attribution 4.0 International (CC BY 4.0)",
+      "commercial_use_allowed": true,
+      "attribution_required": true,
+      "attribution_text": "Proença, P.F. and Simões, P., 2020. TACO: Trash annotations in context for litter detection. arXiv preprint arXiv:2003.06975.",
+      "annotation_format": "COCO JSON bounding boxes & segmentation polygons",
+      "raw_classes": 60,
+      "mapped_classes": 13,
+      "downloaded_images": 1500,
+      "accepted_images": 1500,
+      "rejected_images": 0,
+      "conversion_status": "CONVERTED_YOLO",
+      "environment": "Global outdoor litter, parks, beaches, sidewalks, roadsides"
+    },
+    {
+      "name": "Waste Detection India Dataset",
+      "publisher": "Shivani Kushwaha (Roboflow Universe)",
+      "source_url": "https://universe.roboflow.com/shivani-kushwaha/waste-detection-india-6yvnt",
+      "license": "Creative Commons Attribution 4.0 International (CC BY 4.0)",
+      "commercial_use_allowed": true,
+      "attribution_required": true,
+      "annotation_format": "YOLOv8 txt (x_center, y_center, width, height)",
+      "raw_classes": 6,
+      "mapped_classes": [
+        "Plastic bag & film",
+        "Plastic wrapper",
+        "Cardboard carton",
+        "Drink & metal can",
+        "Plastic bottle"
+      ],
+      "conversion_status": "COMPATIBLE_EXT_MANIFEST",
+      "environment": "Indian urban roadside waste, pavement trash, mixed residential piles, open dumps"
+    },
+    {
+      "name": "Drinking Waste Classification & Detection",
+      "publisher": "Kaggle Open Datasets Community",
+      "source_url": "https://www.kaggle.com/datasets/ark208/drinking-waste-classification",
+      "license": "CC0: Public Domain",
+      "commercial_use_allowed": true,
+      "attribution_required": false,
+      "annotation_format": "YOLO / Pascal VOC XML",
+      "raw_classes": 4,
+      "mapped_classes": [
+        "Plastic bottle",
+        "Glass bottle & jar",
+        "Drink & metal can",
+        "Cardboard carton"
+      ],
+      "conversion_status": "COMPATIBLE_EXT_MANIFEST",
+      "environment": "Single & clustered beverage containers, transparent plastic bottles, clear/colored glass"
+    },
+    {
+      "name": "Open Images v7 Waste & Litter Subset",
+      "publisher": "Google Open Images Initiative",
+      "source_url": "https://storage.googleapis.com/openimages/web/index.html",
+      "license": "Creative Commons Attribution 4.0 International (CC BY 4.0)",
+      "commercial_use_allowed": true,
+      "attribution_required": true,
+      "annotation_format": "Open Images CSV normalized coordinates",
+      "mapped_classes": [
+        "Plastic bottle",
+        "Drink & metal can",
+        "Plastic bag & film",
+        "Cardboard carton"
+      ],
+      "conversion_status": "COMPATIBLE_EXT_MANIFEST",
+      "environment": "General outdoor scenes, urban streets, household disposables"
+    }
+  ]
+}

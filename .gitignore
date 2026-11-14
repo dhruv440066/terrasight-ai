@@ -41,6 +41,8 @@ ENV/
 *.db-shm
 *.sqlite
 *.sqlite3
+*.bak
+*.baseline.*
 backend/cleanpath.db
 
 # Node & Frontend artifacts

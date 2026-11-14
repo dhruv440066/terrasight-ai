@@ -1,0 +1,94 @@
+{
+  "dataset_path": "backend\\taco_yolo_dataset",
+  "validated_at": "2026-11-14T15:34:26Z",
+  "status": "PASSED",
+  "splits": {
+    "train": {
+      "images": 2179,
+      "boxes": 6372
+    },
+    "val": {
+      "images": 225,
+      "boxes": 429
+    },
+    "test": {
+      "images": 150,
+      "boxes": 229
+    }
+  },
+  "integrity": {
+    "total_images_checked": 2554,
+    "corrupted_images": [],
+    "missing_label_files": [],
+    "invalid_boxes": [],
+    "out_of_bounds_classes": [],
+    "empty_label_files": []
+  },
+  "perceptual_duplicates": {
+    "within_split_duplicates": [],
+    "cross_split_leakage": []
+  },
+  "class_distribution": {
+    "train": {
+      "Plastic bottle": 418,
+      "Glass bottle & jar": 146,
+      "Drink & metal can": 336,
+      "Plastic bag & film": 789,
+      "Plastic wrapper": 370,
+      "Disposable cup": 241,
+      "Styrofoam piece": 147,
+      "Bottle cap, straw & lid": 1013,
+      "Food & takeout container": 137,
+      "Cardboard carton": 271,
+      "Paper & paper bag": 223,
+      "Cigarette": 792,
+      "Mixed litter": 1489
+    },
+    "val": {
+      "Plastic bottle": 56,
+      "Glass bottle & jar": 17,
+      "Drink & metal can": 41,
+      "Plastic bag & film": 39,
+      "Plastic wrapper": 48,
+      "Disposable cup": 28,
+      "Styrofoam piece": 17,
+      "Bottle cap, straw & lid": 40,
+      "Food & takeout container": 16,
+      "Cardboard carton": 32,
+      "Paper & paper bag": 26,
+      "Cigarette": 30,
+      "Mixed litter": 39
+    },
+    "test": {
+      "Plastic bottle": 21,
+      "Glass bottle & jar": 11,
+      "Drink & metal can": 27,
+      "Plastic bag & film": 3,
+      "Plastic wrapper": 32,
+      "Disposable cup": 19,
+      "Styrofoam piece": 11,
+      "Bottle cap, straw & lid": 17,
+      "Food & takeout container": 11,
+      "Cardboard carton": 22,
+      "Paper & paper bag": 18,
+      "Cigarette": 21,
+      "Mixed litter": 16
+    },
+    "total": {
+      "Plastic bottle": 495,
+      "Glass bottle & jar": 174,
+      "Drink & metal can": 404,
+      "Plastic bag & film": 831,
+      "Plastic wrapper": 450,
+      "Disposable cup": 288,
+      "Styrofoam piece": 175,
+      "Bottle cap, straw & lid": 1070,
+      "Food & takeout container": 164,
+      "Cardboard carton": 325,
+      "Paper & paper bag": 267,
+      "Cigarette": 843,
+      "Mixed litter": 1544
+    }
+  },
+  "duration_seconds": 39.93
+}

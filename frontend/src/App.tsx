@@ -6,7 +6,11 @@ import {
   Routes,
   useNavigate,
 } from 'react-router-dom';
-import { fetchCurrentUser } from './api';
+import {
+  clearStoredAuthSession,
+  fetchCurrentUser,
+  setStoredAuthSession,
+} from './api';
 import { CitizenView } from './components/CitizenView';
 import { LoginPage } from './components/LoginPage';
 import { OfficerGIS } from './components/OfficerGIS';
@@ -44,8 +48,7 @@ const AppRoutes: React.FC = () => {
         localStorage.setItem(USER_KEY, JSON.stringify(profile));
       })
       .catch(() => {
-        localStorage.removeItem(TOKEN_KEY);
-        localStorage.removeItem(USER_KEY);
+        clearStoredAuthSession();
         setUser(null);
       })
       .finally(() => {
@@ -54,9 +57,7 @@ const AppRoutes: React.FC = () => {
   }, []);
 
   const handleAuthenticated = (token: string, profile: UserProfile) => {
-    localStorage.setItem(TOKEN_KEY, token);
-    localStorage.setItem(USER_KEY, JSON.stringify(profile));
-    localStorage.removeItem(GUEST_MODE_KEY);
+    setStoredAuthSession(token, profile);
     setUser(profile);
     setIsGuest(false);
 
@@ -68,8 +69,7 @@ const AppRoutes: React.FC = () => {
   };
 
   const handleContinueAsGuest = () => {
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USER_KEY);
+    clearStoredAuthSession();
     localStorage.setItem(GUEST_MODE_KEY, 'true');
     setUser(null);
     setIsGuest(true);
@@ -77,9 +77,7 @@ const AppRoutes: React.FC = () => {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USER_KEY);
-    localStorage.removeItem(GUEST_MODE_KEY);
+    clearStoredAuthSession();
     setUser(null);
     setIsGuest(false);
     navigate('/login', { replace: true });
@@ -90,7 +88,7 @@ const AppRoutes: React.FC = () => {
       <div className="flex min-h-screen items-center justify-center bg-[#0F172A] text-white">
         <div className="text-center">
           <div className="mx-auto mb-3 h-8 w-8 animate-spin rounded-full border-2 border-emerald-400 border-t-transparent" />
-          <p className="text-sm font-bold">Initializing CleanPath AI...</p>
+          <p className="text-sm font-bold tracking-wide">Initializing TerraSight AI...</p>
         </div>
       </div>
     );

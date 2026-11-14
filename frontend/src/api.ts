@@ -224,11 +224,30 @@ export function resolveImageUrl(pathOrUrl: string): string {
   return `${base}${normalized}`;
 }
 
+export function setStoredAuthSession(token: string, user: UserProfile): void {
+  localStorage.setItem('terrasight_token', token);
+  localStorage.setItem('cleanpath_token', token);
+  localStorage.setItem('terrasight_user', JSON.stringify(user));
+  localStorage.setItem('cleanpath_user', JSON.stringify(user));
+  localStorage.removeItem('cleanpath_guest_mode');
+}
+
+export function clearStoredAuthSession(): void {
+  localStorage.removeItem('terrasight_token');
+  localStorage.removeItem('cleanpath_token');
+  localStorage.removeItem('terrasight_user');
+  localStorage.removeItem('cleanpath_user');
+  localStorage.removeItem('cleanpath_guest_mode');
+}
+
 export async function loginApi(username: string, password: string): Promise<AuthResponse> {
   const response = await apiClient.post<AuthResponse>('/auth/login', {
     username,
     password,
   });
+  if (response.data?.access_token && response.data?.user) {
+    setStoredAuthSession(response.data.access_token, response.data.user);
+  }
   return response.data;
 }
 
@@ -244,6 +263,17 @@ export async function registerApi(
     password,
     role,
   });
+  if (response.data?.access_token && response.data?.user) {
+    setStoredAuthSession(response.data.access_token, response.data.user);
+  }
+  return response.data;
+}
+
+export async function refreshTokenApi(): Promise<AuthResponse> {
+  const response = await apiClient.post<AuthResponse>('/auth/refresh');
+  if (response.data?.access_token && response.data?.user) {
+    setStoredAuthSession(response.data.access_token, response.data.user);
+  }
   return response.data;
 }
 

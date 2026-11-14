@@ -57,6 +57,8 @@ export const DetectionOverlay: React.FC<DetectionOverlayProps> = ({
   inferenceMode = 'YOLOv8',
 }) => {
   const [showBoxes, setShowBoxes] = useState<boolean>(true);
+  const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const [naturalDims, setNaturalDims] = useState<{ w: number; h: number } | null>(null);
 
   const fallbackW = naturalDims
@@ -73,6 +75,11 @@ export const DetectionOverlay: React.FC<DetectionOverlayProps> = ({
   const safeWidth = imageWidth && imageWidth > 0 ? imageWidth : fallbackW;
   const safeHeight = imageHeight && imageHeight > 0 ? imageHeight : fallbackH;
 
+  const categoriesPresent = Array.from(new Set(detections.map((d) => d.class_name)));
+  const visibleDetections = detections.filter(
+    (d) => selectedCategory === 'ALL' || d.class_name === selectedCategory
+  );
+
   return (
     <div className="relative w-full overflow-hidden rounded-xl border border-slate-200 bg-slate-950 shadow-sm">
       {/* Top Bar Controls: Mode Badge + Bounding Box Toggle + Open Full Image */}
@@ -87,7 +94,7 @@ export const DetectionOverlay: React.FC<DetectionOverlayProps> = ({
             {inferenceMode === 'YOLOv8' ? 'AI Mode (YOLOv8)' : 'Analytical Fallback Mode'}
           </span>
           <span className="ml-1 rounded bg-white/15 px-1.5 py-0.5 text-[10px] font-bold">
-            {detections.length} {detections.length === 1 ? 'box' : 'boxes'}
+            {visibleDetections.length} {visibleDetections.length === 1 ? 'box' : 'boxes'}
           </span>
         </div>
 
@@ -126,6 +133,43 @@ export const DetectionOverlay: React.FC<DetectionOverlayProps> = ({
         </div>
       </div>
 
+      {/* Category Filter Pills (When multiple categories exist) */}
+      {showBoxes && categoriesPresent.length > 1 && (
+        <div className="absolute inset-x-3 bottom-3 z-20 flex flex-wrap items-center gap-1.5 pointer-events-none">
+          <div className="pointer-events-auto flex items-center gap-1.5 rounded-full bg-slate-900/80 p-1 backdrop-blur-sm">
+            <button
+              type="button"
+              onClick={() => setSelectedCategory('ALL')}
+              className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold transition ${
+                selectedCategory === 'ALL'
+                  ? 'bg-emerald-600 text-white'
+                  : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              All ({detections.length})
+            </button>
+            {categoriesPresent.map((cat) => {
+              const count = detections.filter((d) => d.class_name === cat).length;
+              const isSelected = selectedCategory === cat;
+              return (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setSelectedCategory(cat)}
+                  className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold transition ${
+                    isSelected
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-300 hover:text-white'
+                  }`}
+                >
+                  {cat} ({count})
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div className="relative mx-auto w-full">
         <img
           src={imageUrl}
@@ -146,7 +190,13 @@ export const DetectionOverlay: React.FC<DetectionOverlayProps> = ({
             preserveAspectRatio="xMidYMid meet"
             className="pointer-events-none absolute inset-0 h-full w-full"
           >
-            {detections.map((det, idx) => {
+            <defs>
+              <filter id="box-glow" x="-20%" y="-20%" width="140%" height="140%">
+                <feGaussianBlur stdDeviation="3" result="blur" />
+                <feComposite in="SourceGraphic" in2="blur" operator="over" />
+              </filter>
+            </defs>
+            {visibleDetections.map((det, idx) => {
               const { x1, y1, x2, y2 } = det.bbox;
               const boxW = Math.max(8, x2 - x1);
               const boxH = Math.max(8, y2 - y1);
@@ -165,17 +215,24 @@ export const DetectionOverlay: React.FC<DetectionOverlayProps> = ({
               );
               const labelX = Math.max(0, Math.min(x1, safeWidth - labelWidth));
               const labelY = y1 >= labelHeight + 3 ? y1 - labelHeight : y1;
+              const isHovered = hoveredIdx === idx;
 
               return (
-                <g key={`${displayLabel}-${idx}`}>
+                <g
+                  key={`${displayLabel}-${idx}`}
+                  className="pointer-events-auto cursor-pointer transition-opacity"
+                  onMouseEnter={() => setHoveredIdx(idx)}
+                  onMouseLeave={() => setHoveredIdx(null)}
+                  filter={isHovered ? 'url(#box-glow)' : undefined}
+                >
                   <rect
                     x={x1}
                     y={y1}
                     width={boxW}
                     height={boxH}
-                    fill={palette.fill}
+                    fill={isHovered ? palette.fill.replace('0.14', '0.28') : palette.fill}
                     stroke={palette.stroke}
-                    strokeWidth={Math.max(2, safeWidth * 0.0032)}
+                    strokeWidth={isHovered ? Math.max(3, safeWidth * 0.005) : Math.max(2, safeWidth * 0.0032)}
                     rx={3}
                   />
                   <rect
@@ -185,6 +242,7 @@ export const DetectionOverlay: React.FC<DetectionOverlayProps> = ({
                     height={labelHeight}
                     fill={palette.bg}
                     rx={3}
+                    opacity={isHovered ? 1 : 0.94}
                   />
                   <text
                     x={labelX + 6}

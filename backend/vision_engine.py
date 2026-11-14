@@ -891,7 +891,6 @@ class VisionEngine:
                 return "Plastic Waste", "Glass bottle & jar", confidence
             else:
                 return "Plastic Waste", "Plastic bottle", confidence
-            return initial_category, initial_subclass, confidence
 
         h = roi_hsv[:, :, 0].astype(np.float32)
         s = roi_hsv[:, :, 1].astype(np.float32)
@@ -904,7 +903,15 @@ class VisionEngine:
         if blue_plastic_ratio > 0.22 or white_foam_ratio > 0.34 or black_bag_ratio > 0.42:
             if initial_subclass in ("Mixed litter", "Plastic Waste") and black_bag_ratio > 0.42:
                 return "Plastic Waste", "Plastic bag & film", max(confidence, 0.72)
+            if initial_subclass in ("Mixed litter", "Plastic Waste") and white_foam_ratio > 0.34:
+                return "Plastic Waste", "Styrofoam piece", max(confidence, 0.70)
             return initial_category, initial_subclass, confidence
+
+        # Kraft cardboard check (warm brown matte tones, moderate saturation)
+        cardboard_mask = (h >= 10) & (h <= 24) & (s >= 35) & (s <= 140) & (v >= 70) & (v <= 190)
+        cardboard_ratio = float(np.sum(cardboard_mask)) / total_px
+        if cardboard_ratio > 0.42 and initial_subclass in ("Mixed litter", "Plastic Waste"):
+            return "Dry Leaves / Biomass", "Cardboard carton", max(confidence, 0.68)
 
         organic_mask = ((h >= 15) & (h <= 26) & (s >= 150) & (v >= 110)) | (
             (h >= 7) & (h < 15) & (s >= 165) & (v >= 115)
