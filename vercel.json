@@ -11,7 +11,8 @@
     "api": {
       "root": "api",
       "framework": "fastapi",
-      "entrypoint": "index:app"
+      "entrypoint": "index:app",
+      "buildCommand": "python --version"
     }
   },
   "rewrites": [

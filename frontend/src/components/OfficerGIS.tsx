@@ -369,27 +369,6 @@ export const OfficerGIS: React.FC<OfficerGISProps> = ({ user, onLogout }) => {
               Analytics &amp; Registry
             </button>
 
-            <button
-              type="button"
-              disabled={seeding}
-              onClick={handleSeedDemo}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-950/60 px-3 py-1.5 text-xs font-bold text-emerald-300 hover:bg-emerald-900/70 disabled:opacity-50"
-            >
-              <Sparkles className="h-3.5 w-3.5" />
-              {seeding ? 'Working...' : 'Seed Demo Data (15→10)'}
-            </button>
-
-            <button
-              type="button"
-              disabled={seeding}
-              onClick={handleClearDemo}
-              title="Remove synthetic demo incidents and display only real citizen submissions"
-              className="inline-flex items-center gap-1 rounded-lg border border-slate-700 bg-slate-800/80 px-2.5 py-1.5 text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-white disabled:opacity-50"
-            >
-              <Trash2 className="h-3.5 w-3.5 text-slate-400" />
-              <span className="hidden lg:inline">Clear Demo</span>
-            </button>
-
             <div className="hidden items-center gap-1.5 rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200 md:flex">
               <Shield className="h-3.5 w-3.5 text-emerald-400" />
               <span>Officer: {user.name || user.username}</span>
@@ -820,8 +799,7 @@ export const OfficerGIS: React.FC<OfficerGISProps> = ({ user, onLogout }) => {
                       No active waste hotspots.
                     </p>
                     <p className="mt-1 text-xs text-slate-500">
-                      Submit a citizen waste report or click &ldquo;Seed Demo
-                      Data&rdquo; above to populate sample clusters.
+                      Live citizen waste reports will automatically aggregate into 50m geospatial clusters.
                     </p>
                   </div>
                 ) : (
@@ -1406,7 +1384,7 @@ export const OfficerGIS: React.FC<OfficerGISProps> = ({ user, onLogout }) => {
               </div>
               {incidents.length === 0 ? (
                 <div className="p-8 text-center text-sm text-slate-500">
-                  No citizen reports yet.
+                  No citizen reports available yet. Live reports submitted by citizens will appear here automatically.
                 </div>
               ) : (
                 <div className="overflow-x-auto">

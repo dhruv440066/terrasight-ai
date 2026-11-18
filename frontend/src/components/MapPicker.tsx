@@ -145,16 +145,8 @@ export const MapPicker: React.FC<MapPickerProps> = ({
     );
   };
 
-  const handleSelectExifGps = () => {
-    if (hasExifGps && exifCoords?.latitude != null && exifCoords?.longitude != null) {
-      onChangeCoordinates(exifCoords.latitude, exifCoords.longitude, 'EXIF');
-    }
-  };
-
   const sourceLabel =
-    locationSource === 'EXIF'
-      ? 'EXIF GPS'
-      : locationSource === 'CURRENT_LOCATION'
+    locationSource === 'CURRENT_LOCATION'
       ? 'Current Location'
       : 'Manual Pin';
 
@@ -173,56 +165,35 @@ export const MapPicker: React.FC<MapPickerProps> = ({
           className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
         >
           <Navigation className="h-3.5 w-3.5 text-emerald-600" />
-          Use Current Location / Default Pin
+          Use Current Location
         </button>
       </div>
 
-      {/* 3-Way Location Source Selector */}
-      <div className="grid grid-cols-3 gap-2 rounded-lg bg-slate-100 p-1 text-xs">
-        <button
-          type="button"
-          disabled={!hasExifGps}
-          onClick={handleSelectExifGps}
-          className={`flex items-center justify-center gap-1.5 rounded-md px-2.5 py-2 font-semibold transition ${
-            locationSource === 'EXIF'
-              ? 'bg-white text-emerald-700 shadow-sm ring-1 ring-emerald-500/30'
-              : hasExifGps
-              ? 'text-slate-700 hover:bg-white/60'
-              : 'cursor-not-allowed text-slate-400'
-          }`}
-          title={
-            hasExifGps
-              ? 'Use GPS coordinates embedded in photo EXIF'
-              : 'No EXIF GPS metadata found in uploaded image'
-          }
-        >
-          <Camera className="h-3.5 w-3.5" />
-          <span>EXIF GPS</span>
-        </button>
-
+      {/* 2-Way Location Source Selector (Current Location & Manual Pin) */}
+      <div className="grid grid-cols-2 gap-2 rounded-lg bg-slate-100 p-1 text-xs">
         <button
           type="button"
           onClick={handleUseBrowserGeolocation}
-          className={`flex items-center justify-center gap-1.5 rounded-md px-2.5 py-2 font-semibold transition ${
+          className={`flex items-center justify-center gap-1.5 rounded-md px-3 py-2 font-semibold transition ${
             locationSource === 'CURRENT_LOCATION'
               ? 'bg-white text-emerald-700 shadow-sm ring-1 ring-emerald-500/30'
               : 'text-slate-700 hover:bg-white/60'
           }`}
         >
-          <Compass className="h-3.5 w-3.5" />
+          <Navigation className="h-3.5 w-3.5 text-emerald-600" />
           <span>Current Location</span>
         </button>
 
         <button
           type="button"
           onClick={() => onChangeCoordinates(activeLat, activeLon, 'MANUAL')}
-          className={`flex items-center justify-center gap-1.5 rounded-md px-2.5 py-2 font-semibold transition ${
+          className={`flex items-center justify-center gap-1.5 rounded-md px-3 py-2 font-semibold transition ${
             locationSource === 'MANUAL'
               ? 'bg-white text-emerald-700 shadow-sm ring-1 ring-emerald-500/30'
               : 'text-slate-700 hover:bg-white/60'
           }`}
         >
-          <MapPin className="h-3.5 w-3.5" />
+          <MapPin className="h-3.5 w-3.5 text-rose-600" />
           <span>Manual Pin</span>
         </button>
       </div>

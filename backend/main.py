@@ -35,6 +35,11 @@ from PIL import Image, ImageDraw
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+import sys
+
+_current_dir = Path(__file__).resolve().parent
+if str(_current_dir) not in sys.path:
+    sys.path.insert(0, str(_current_dir))
 
 from auth import (
     create_access_token,

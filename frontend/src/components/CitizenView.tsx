@@ -48,7 +48,7 @@ const GUEST_INCIDENTS_STORAGE_KEY = 'cleanpath_guest_incidents';
 const ANALYSIS_PROGRESS_STEPS = [
   'Uploading waste photograph...',
   'Running YOLOv8 multi-scale waste detection...',
-  'Extracting EXIF GPS metadata & reverse geocoding...',
+  'Detecting location coordinates & reverse geocoding...',
   'Calculating hazard-weighted severity index...',
 ];
 
@@ -301,7 +301,7 @@ export const CitizenView: React.FC<CitizenViewProps> = ({
       setAnalysis(result);
       setAddress(result.address || '');
 
-      // 3. Resolve verified coordinates from backend EXIF or client-side binary recovery
+      // 3. Preserve background EXIF coordinates for municipal database analytics
       const resolvedExifLat =
         result.gps?.latitude !== null && result.gps?.latitude !== undefined
           ? result.gps.latitude
@@ -314,18 +314,33 @@ export const CitizenView: React.FC<CitizenViewProps> = ({
       if (resolvedExifLat !== null && resolvedExifLon !== null) {
         setExifLatitude(resolvedExifLat);
         setExifLongitude(resolvedExifLon);
-        setLatitude(resolvedExifLat);
-        setLongitude(resolvedExifLon);
-        setLocationSource('EXIF');
-        setShowManualMapOverride(false);
       } else {
         setExifLatitude(null);
         setExifLongitude(null);
-        setLatitude(28.6139);
-        setLongitude(77.209);
-        setLocationSource('MANUAL');
-        setShowManualMapOverride(true);
       }
+
+      // Try browser geolocation first for citizen location, fallback to verified pin
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            setLatitude(Number(pos.coords.latitude.toFixed(6)));
+            setLongitude(Number(pos.coords.longitude.toFixed(6)));
+            setLocationSource('CURRENT_LOCATION');
+          },
+          () => {
+            // Fallback: use verified pin or default New Delhi center
+            setLatitude(resolvedExifLat || 28.6139);
+            setLongitude(resolvedExifLon || 77.209);
+            setLocationSource('MANUAL');
+          },
+          { enableHighAccuracy: true, timeout: 6000 }
+        );
+      } else {
+        setLatitude(resolvedExifLat || 28.6139);
+        setLongitude(resolvedExifLon || 77.209);
+        setLocationSource('MANUAL');
+      }
+      setShowManualMapOverride(true);
     } catch (err: unknown) {
       let msg = 'Failed to analyze the waste image. Please try another photograph.';
       if (
@@ -693,7 +708,7 @@ export const CitizenView: React.FC<CitizenViewProps> = ({
                 </h3>
                 <p className="mt-1 text-xs text-slate-500">
                   {analyzing
-                    ? 'Executing multi-stage computer vision and EXIF geolocation pipeline...'
+                    ? 'Executing multi-stage computer vision and civic geolocation pipeline...'
                     : 'Drag & Drop a .JPG or .PNG image here'}
                 </p>
 
@@ -853,11 +868,11 @@ export const CitizenView: React.FC<CitizenViewProps> = ({
                       Location Status
                     </h3>
 
-                    {(locationSource === 'EXIF_GPS' || locationSource === 'EXIF' || (analysis.gps && (analysis.gps.source === 'EXIF' || analysis.gps.source === 'EXIF_GPS') && analysis.gps.latitude !== null)) && !showManualMapOverride ? (
+                    {locationSource === 'CURRENT_LOCATION' ? (
                       <div className="space-y-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3.5 text-xs">
                         <div className="flex items-center gap-1.5 font-bold text-emerald-800">
                           <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                          <span>GPS extracted from image EXIF metadata</span>
+                          <span>Device Geolocation Active</span>
                         </div>
                         {address && (
                           <p className="font-semibold text-slate-800">{address}</p>
@@ -876,30 +891,35 @@ export const CitizenView: React.FC<CitizenViewProps> = ({
                             </strong>
                           </div>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => setShowManualMapOverride(true)}
-                          className="mt-1 text-[11px] font-bold text-emerald-700 underline"
-                        >
-                          Open interactive map to verify or adjust pin
-                        </button>
+                        <p className="text-[11px] text-emerald-700">
+                          Verified from your browser GPS. Adjust on the map below if needed.
+                        </p>
                       </div>
                     ) : (
-                      <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-                        <div className="flex items-center gap-1.5 font-bold">
-                          <AlertTriangle className="h-4 w-4 text-amber-600" />
-                          <span>
-                            {locationSource === 'CURRENT_LOCATION'
-                              ? 'Device GPS / Current Location Active'
-                              : showManualMapOverride
-                              ? 'Manual / Interactive Map Mode Active'
-                              : 'EXIF GPS not found in image'}
-                          </span>
+                      <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3.5 text-xs">
+                        <div className="flex items-center gap-1.5 font-bold text-slate-800">
+                          <MapPin className="h-4 w-4 text-rose-600" />
+                          <span>Interactive Map Pin Mode</span>
                         </div>
-                        <p className="mt-1 text-amber-800">
-                          {locationSource === 'CURRENT_LOCATION'
-                            ? 'Coordinates obtained from your device location. Adjust on the map below if needed.'
-                            : 'Confirm or adjust the waste coordinates below using Current Location or by dragging the red pin on the map.'}
+                        {address && (
+                          <p className="font-semibold text-slate-800">{address}</p>
+                        )}
+                        <div className="grid grid-cols-2 gap-2 pt-1 text-slate-700">
+                          <div>
+                            <span className="text-slate-500">Latitude:</span>{' '}
+                            <strong className="text-slate-900">
+                              {latitude?.toFixed(5)}
+                            </strong>
+                          </div>
+                          <div>
+                            <span className="text-slate-500">Longitude:</span>{' '}
+                            <strong className="text-slate-900">
+                              {longitude?.toFixed(5)}
+                            </strong>
+                          </div>
+                        </div>
+                        <p className="text-[11px] text-slate-600">
+                          Confirm or adjust the waste coordinates below using Current Location or by dragging the red pin on the map.
                         </p>
                       </div>
                     )}

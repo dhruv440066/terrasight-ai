@@ -48,8 +48,13 @@ except ImportError:
     HAS_ORT = False
 
 import numpy as np
+import sys
 from dotenv import load_dotenv
 from PIL import Image, ImageOps
+
+_current_dir = Path(__file__).resolve().parent
+if str(_current_dir) not in sys.path:
+    sys.path.insert(0, str(_current_dir))
 
 from train_taco import (
     CATEGORY_MULTIPLIERS,
